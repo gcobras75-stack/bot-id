@@ -51,7 +51,7 @@ export function analyzeAccount(profileData, postHistory = []) {
     const diasDeVida = (ahora - createdAt) / (1000 * 60 * 60 * 24);
 
     if (diasDeVida < 7 && postsTotal > 50) {
-      señal2Score = 15;
+      señal2Score = 25;
       señalesActivas.push({
         señal: 'Cuenta muy nueva con actividad masiva',
         detalle: `${Math.round(diasDeVida)} días de vida con ${postsTotal} posts`,
@@ -111,7 +111,7 @@ export function analyzeAccount(profileData, postHistory = []) {
   let señal4Score = 0;
 
   if (sinBio && sinAvatar) {
-    señal4Score = 10;
+    señal4Score = 20;
     señalesActivas.push({
       señal: 'Perfil vacío (sin bio y sin foto)',
       detalle: 'Sin descripción y sin imagen de perfil',
@@ -257,7 +257,7 @@ export function analyzeAccount(profileData, postHistory = []) {
     const totalInteracciones = totalLikes + totalReplies;
 
     if (totalInteracciones === 0 && postHistory.length >= 10) {
-      señal8Score = 5;
+      señal8Score = 15;
       señalesActivas.push({
         señal: 'Cero interacciones recibidas',
         detalle: `${postHistory.length} posts analizados sin ningún like ni respuesta`,
@@ -272,9 +272,9 @@ export function analyzeAccount(profileData, postHistory = []) {
   // ─────────────────────────────────────────
   const score = Math.min(100, Math.round(totalScore));
   let nivel;
-  if (score >= 80) nivel = 'MUY ALTO';
-  else if (score >= 60) nivel = 'ALTO';
-  else if (score >= 35) nivel = 'MEDIO';
+  if (score >= 70) nivel = 'MUY ALTO';
+  else if (score >= 50) nivel = 'ALTO';
+  else if (score >= 25) nivel = 'MEDIO';
   else nivel = 'BAJO';
 
   const resumen = generarResumen(score, nivel, señalesActivas, profileData.handle);
