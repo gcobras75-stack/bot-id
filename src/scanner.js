@@ -4,7 +4,7 @@
  */
 
 import cron from 'node-cron';
-import { analyzeAccount } from './analyzer.js';
+import { analyzeAccountsBatch } from './analyzer.js';
 import { saveAccount, saveWeeklyScan } from './database.js';
 import { generarTarjetaReporte } from './imageGenerator.js';
 import { publishImagePost } from './socialPublisher.js';
@@ -71,34 +71,21 @@ async function scanHashtag(hashtag, blueskyClient) {
     let botsDetected = 0;
     const botHandles = [];
 
-    // Analizar cada handle (con pausa para no sobrecargar la API)
-    for (const handle of handlesUnicos) {
-      try {
-        const profileData = await blueskyClient.getProfile(handle);
-        if (!profileData) continue;
+    // Analizar en paralelo — lotes de 10 con pausa de 500ms entre lotes
+    const batchResults = await analyzeAccountsBatch(handlesUnicos, blueskyClient);
 
-        const postHistory = await blueskyClient.getPostHistory(profileData.did, 50);
-        const analysis = analyzeAccount(profileData, postHistory);
-
-        if (analysis.score >= BOT_SCORE_THRESHOLD) {
-          botsDetected++;
-          botHandles.push({ handle, score: analysis.score, nivel: analysis.nivel });
-
-          // Guardar en BD
-          saveAccount({
-            handle,
-            did: profileData.did,
-            score: analysis.score,
-            nivel: analysis.nivel,
-            señales: analysis.señales,
-            requestedBy: 'scanner',
-          });
-        }
-
-        // Pausa para no saturar la API de Bluesky
-        await sleep(500);
-      } catch (err) {
-        console.error(`    Error analizando @${handle}:`, err.message);
+    for (const { handle, profileData, analysis } of batchResults) {
+      if (analysis.score >= BOT_SCORE_THRESHOLD) {
+        botsDetected++;
+        botHandles.push({ handle, score: analysis.score, nivel: analysis.nivel });
+        saveAccount({
+          handle,
+          did: profileData.did,
+          score: analysis.score,
+          nivel: analysis.nivel,
+          señales: analysis.señales,
+          requestedBy: 'scanner',
+        });
       }
     }
 

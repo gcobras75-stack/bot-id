@@ -289,3 +289,42 @@ function generarResumen(score, nivel, señales, handle) {
   const topSeñal = señales[0]?.señal || '';
   return `@${handle} muestra ${señales.length} señal(es) de bot (score: ${score}/100). Principal: ${topSeñal}`;
 }
+
+/**
+ * Analiza un array de handles en paralelo, en lotes de batchSize.
+ * Reduce el tiempo de escaneo de O(n) serie a O(n/batchSize) paralelo.
+ *
+ * @param {string[]} handles
+ * @param {import('./bluesky.js').BlueskyClient} blueskyClient
+ * @param {{ batchSize?: number, pauseMs?: number, postLimit?: number }} options
+ * @returns {Promise<Array<{handle: string, profileData: object, analysis: object}>>}
+ */
+export async function analyzeAccountsBatch(handles, blueskyClient, options = {}) {
+  const { batchSize = 10, pauseMs = 500, postLimit = 50 } = options;
+  const results = [];
+
+  for (let i = 0; i < handles.length; i += batchSize) {
+    const batch = handles.slice(i, i + batchSize);
+
+    const batchResults = await Promise.all(batch.map(async (handle) => {
+      try {
+        const profileData = await blueskyClient.getProfile(handle);
+        if (!profileData) return null;
+        const postHistory = await blueskyClient.getPostHistory(profileData.did, postLimit);
+        const analysis = analyzeAccount(profileData, postHistory);
+        return { handle, profileData, analysis };
+      } catch (err) {
+        console.error(`  Error analizando @${handle}:`, err.message);
+        return null;
+      }
+    }));
+
+    results.push(...batchResults.filter(Boolean));
+
+    if (i + batchSize < handles.length) {
+      await new Promise(r => setTimeout(r, pauseMs));
+    }
+  }
+
+  return results;
+}

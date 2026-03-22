@@ -64,6 +64,19 @@ export function initDatabase() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_mentions_uri ON processed_mentions(mention_uri);
+
+    -- Costos de llamadas a la API de Anthropic
+    CREATE TABLE IF NOT EXISTS api_costs (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp     TEXT NOT NULL,
+      model         TEXT NOT NULL,
+      input_tokens  INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      cost_usd      REAL NOT NULL,
+      endpoint      TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_costs_timestamp ON api_costs(timestamp);
   `);
 
   console.log('✅ Base de datos inicializada:', DB_PATH);

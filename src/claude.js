@@ -4,6 +4,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { recordApiCall } from './costMonitor.js';
 
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -59,6 +60,9 @@ Devuelve SOLO el texto del post, sin comillas ni explicaciones adicionales.`,
       ],
     });
 
+    recordApiCall({ model: 'claude-sonnet-4-6', inputTokens: resBsky.usage.input_tokens,
+      outputTokens: resBsky.usage.output_tokens, endpoint: 'generateBotReport:bluesky' });
+
     const blueskyText = extractText(resBsky);
 
     // --- Versión Substack / larga (500-800 palabras) ---
@@ -85,6 +89,9 @@ Tono: periodismo de denuncia activista, basado en evidencia medible.`,
         },
       ],
     });
+
+    recordApiCall({ model: 'claude-sonnet-4-6', inputTokens: resSubstack.usage.input_tokens,
+      outputTokens: resSubstack.usage.output_tokens, endpoint: 'generateBotReport:substack' });
 
     const substackText = extractText(resSubstack);
 
@@ -175,6 +182,12 @@ HASHTAG MÁS MANIPULADO: #${statsData.topHashtags[0]?.hashtag || 'N/D'} (${stats
         ],
       }),
     ]);
+
+    for (const [res, ep] of [[resBsky, 'weekly:bluesky'], [resInsta, 'weekly:instagram'],
+                              [resTwitter, 'weekly:twitter'], [resSubstack, 'weekly:substack']]) {
+      recordApiCall({ model: 'claude-sonnet-4-6', inputTokens: res.usage.input_tokens,
+        outputTokens: res.usage.output_tokens, endpoint: ep });
+    }
 
     return {
       bluesky: extractText(resBsky),

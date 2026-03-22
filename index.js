@@ -12,6 +12,7 @@ import { startMentionsListener } from './src/mentions.js';
 import { startScanner, runScan } from './src/scanner.js';
 import { scheduleWeeklyReport } from './src/reporter.js';
 import { scheduleTrendingPublisher } from './src/publisher.js';
+import { initCostMonitor } from './src/costMonitor.js';
 
 // ─── Validación de variables de entorno ─────────────────────────────────────
 
@@ -91,6 +92,9 @@ async function main() {
 
   // 6. Programar publicación diaria de imágenes de tendencias
   scheduleTrendingPublisher(bluesky);
+
+  // 7. Iniciar monitor de costos API
+  initCostMonitor(bluesky);
 
   // 7. Status en consola
   console.log(`

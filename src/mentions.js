@@ -9,7 +9,7 @@
  */
 
 import fs from 'fs';
-import { analyzeAccount } from './analyzer.js';
+import { analyzeAccount, analyzeAccountsBatch } from './analyzer.js';
 import { generateBotReport } from './claude.js';
 import {
   saveAccount,
@@ -235,23 +235,20 @@ async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) 
     return;
   }
 
-  // Analizar hasta MAX_THREAD_ACCOUNTS cuentas únicas
-  const handles = [...participants.values()].slice(0, MAX_THREAD_ACCOUNTS);
+  // Analizar hasta MAX_THREAD_ACCOUNTS cuentas únicas — en paralelo
+  const handlesList = [...participants.values()].slice(0, MAX_THREAD_ACCOUNTS).map(p => p.handle);
   const botsEncontrados = [];
   let analizados = 0;
 
-  for (const { handle } of handles) {
-    try {
-      const result = await analyzeOne(handle, blueskyClient, requesterHandle);
-      if (result) {
-        analizados++;
-        if (result.analysis.score >= DUD_THRESHOLD) {
-          botsEncontrados.push({ handle, score: result.analysis.score });
-        }
-      }
-      await sleep(500);
-    } catch (err) {
-      console.error(`    Error analizando @${handle}:`, err.message);
+  const batchResults = await analyzeAccountsBatch(handlesList, blueskyClient, { postLimit: 100 });
+  for (const { handle, profileData, analysis } of batchResults) {
+    analizados++;
+    saveAccount({
+      handle, did: profileData.did, score: analysis.score,
+      nivel: analysis.nivel, señales: analysis.señales, requestedBy: requesterHandle,
+    });
+    if (analysis.score >= DUD_THRESHOLD) {
+      botsEncontrados.push({ handle, score: analysis.score });
     }
   }
 
@@ -376,23 +373,21 @@ async function handleModeHashtag(mention, blueskyClient) {
     autoresMap.set(handle, entry);
   }
 
-  // Analizar hasta MAX_HASHTAG_ACCOUNTS cuentas únicas
+  // Analizar hasta MAX_HASHTAG_ACCOUNTS cuentas únicas — en paralelo
   const autores = [...autoresMap.values()].slice(0, MAX_HASHTAG_ACCOUNTS);
   const botsEncontrados = [];
   let analizados = 0;
 
-  for (const { handle, postCount } of autores) {
-    try {
-      const result = await analyzeOne(handle, blueskyClient, requesterHandle);
-      if (result) {
-        analizados++;
-        if (result.analysis.score >= DUD_THRESHOLD) {
-          botsEncontrados.push({ handle, score: result.analysis.score, postCount });
-        }
-      }
-      await sleep(500);
-    } catch (err) {
-      console.error(`    Error analizando @${handle}:`, err.message);
+  const batchResults = await analyzeAccountsBatch(autores.map(a => a.handle), blueskyClient, { postLimit: 100 });
+  for (const { handle, profileData, analysis } of batchResults) {
+    analizados++;
+    saveAccount({
+      handle, did: profileData.did, score: analysis.score,
+      nivel: analysis.nivel, señales: analysis.señales, requestedBy: requesterHandle,
+    });
+    const postCount = autoresMap.get(handle)?.postCount || 1;
+    if (analysis.score >= DUD_THRESHOLD) {
+      botsEncontrados.push({ handle, score: analysis.score, postCount });
     }
   }
 
