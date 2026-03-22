@@ -12,19 +12,35 @@ export class BlueskyClient {
   }
 
   /**
-   * Autenticación con las credenciales del .env
+   * Autenticación con las credenciales del .env.
+   * Reintenta hasta 3 veces con espera exponencial si Bluesky responde Rate Limit.
+   * Errores que no son rate limit (credenciales incorrectas, red) fallan de inmediato.
    */
   async login() {
-    try {
-      await this.agent.login({
-        identifier: process.env.BLUESKY_USERNAME,
-        password: process.env.BLUESKY_PASSWORD,
-      });
-      this.isLoggedIn = true;
-      console.log(`✅ Bluesky: sesión iniciada como @${process.env.BLUESKY_USERNAME}`);
-    } catch (err) {
-      console.error('❌ Bluesky login fallido:', err.message);
-      throw err;
+    const DELAYS = [5 * 60_000, 10 * 60_000, 20 * 60_000]; // 5 min, 10 min, 20 min
+    const MAX_ATTEMPTS = 3;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        await this.agent.login({
+          identifier: process.env.BLUESKY_USERNAME,
+          password: process.env.BLUESKY_PASSWORD,
+        });
+        this.isLoggedIn = true;
+        console.log(`✅ Bluesky: sesión iniciada como @${process.env.BLUESKY_USERNAME}`);
+        return;
+      } catch (err) {
+        const isRateLimit = err.status === 429 || /rate.?limit/i.test(err.message);
+
+        if (!isRateLimit || attempt === MAX_ATTEMPTS) {
+          console.error(`❌ Bluesky login fallido (intento ${attempt}/${MAX_ATTEMPTS}): ${err.message}`);
+          throw err;
+        }
+
+        const waitMs = DELAYS[attempt - 1];
+        console.warn(`⚠️  Rate Limit en login (intento ${attempt}/${MAX_ATTEMPTS}). Esperando ${waitMs / 60_000} minutos...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
     }
   }
 
