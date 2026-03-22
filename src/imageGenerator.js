@@ -186,6 +186,113 @@ function generarSVG(tipo, tendencias, fecha) {
 </svg>`;
 }
 
+/** Retorna color hex según nivel BAJO/MEDIO/ALTO (spec Sesión 2) */
+function nivelColor(nivel) {
+  if (nivel === 'BAJO')  return '#00ff88';
+  if (nivel === 'MEDIO') return '#ffaa00';
+  return '#ff4444'; // ALTO
+}
+
+/**
+ * Genera SVG de tarjeta de reporte individual 1200×630px.
+ * @param {{
+ *   fuente: string,    — hashtag, @handle o 'Hilo'
+ *   bots: number,      — bots detectados (o score si es cuenta individual)
+ *   total: number,     — cuentas analizadas
+ *   porcentaje: number,
+ *   nivel: 'BAJO'|'MEDIO'|'ALTO',
+ *   fecha: string,
+ *   labelBots?: string — etiqueta bajo el número grande (default: 'BOTS DETECTADOS')
+ * }} datos
+ */
+function generarSVGReporte(datos) {
+  const W = 1200;
+  const H = 630;
+  const { fuente, bots, total, porcentaje, nivel, fecha } = datos;
+  const label = datos.labelBots || 'BOTS DETECTADOS';
+  const color = nivelColor(nivel);
+  const cx = W / 2;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+
+  <!-- Fondo -->
+  <rect width="${W}" height="${H}" fill="#0a0a0a"/>
+
+  <!-- Borde de color según nivel (4px) -->
+  <rect x="2" y="2" width="${W - 4}" height="${H - 4}"
+    fill="none" stroke="${color}" stroke-width="4" rx="3"/>
+
+  <!-- Línea decorativa bajo header -->
+  <line x1="40" y1="108" x2="${W - 40}" y2="108"
+    stroke="${color}" stroke-width="1" opacity="0.15"/>
+
+  <!-- Logo BOT-ID (arriba izquierda) -->
+  <text x="50" y="78"
+    font-family="Arial Black, Arial, sans-serif" font-size="38" font-weight="900"
+    fill="#ffffff">BOT-ID</text>
+  <text x="188" y="78"
+    font-family="Arial, sans-serif" font-size="16" fill="#666666">
+    Detector de bots
+  </text>
+
+  <!-- Badge de nivel (arriba derecha) -->
+  <rect x="942" y="28" width="210" height="52" rx="8"
+    fill="${color}" opacity="0.12" stroke="${color}" stroke-width="1.5"/>
+  <text x="1047" y="61"
+    font-family="Arial Black, Arial, sans-serif" font-size="24" font-weight="900"
+    fill="${color}" text-anchor="middle">${esc(nivel)}</text>
+
+  <!-- Número grande (bots o score) -->
+  <text x="${cx}" y="278"
+    font-family="Arial Black, Arial, sans-serif" font-size="148" font-weight="900"
+    fill="${color}" text-anchor="middle">${bots}</text>
+
+  <!-- Etiqueta bajo el número -->
+  <text x="${cx}" y="316"
+    font-family="Arial, sans-serif" font-size="18" fill="#777777"
+    text-anchor="middle" letter-spacing="4">${esc(label)}</text>
+
+  <!-- Separador central -->
+  <line x1="180" y1="344" x2="${W - 180}" y2="344"
+    stroke="${color}" stroke-width="1" opacity="0.25"/>
+
+  <!-- Porcentaje -->
+  <text x="${cx}" y="432"
+    font-family="Arial Black, Arial, sans-serif" font-size="82" font-weight="900"
+    fill="#ffffff" text-anchor="middle">${porcentaje}%</text>
+
+  <!-- Subtítulo porcentaje -->
+  <text x="${cx}" y="464"
+    font-family="Arial, sans-serif" font-size="17" fill="#666666"
+    text-anchor="middle" letter-spacing="3">DE MANIPULACIÓN ARTIFICIAL</text>
+
+  <!-- Fuente analizada -->
+  <text x="${cx}" y="516"
+    font-family="Arial Black, Arial, sans-serif" font-size="22" font-weight="700"
+    fill="#ffffff" text-anchor="middle">📌 ${esc(fuente)}</text>
+
+  <!-- Total cuentas -->
+  <text x="${cx}" y="546"
+    font-family="Arial, sans-serif" font-size="15" fill="#555555"
+    text-anchor="middle">${Number(total).toLocaleString('es-MX')} cuentas analizadas</text>
+
+  <!-- Separador footer -->
+  <rect x="0" y="574" width="${W}" height="2" fill="${color}" opacity="0.35"/>
+  <rect x="0" y="576" width="${W}" height="54" fill="#0f0f0f"/>
+
+  <!-- Footer texto -->
+  <text x="50" y="610"
+    font-family="Arial, sans-serif" font-size="15" fill="#555555">
+    bot-id.bsky.social  ·  Transparencia digital
+  </text>
+  <text x="${W - 50}" y="610"
+    font-family="Arial, sans-serif" font-size="15" fill="#555555"
+    text-anchor="end">${esc(fecha)}</text>
+
+</svg>`;
+}
+
 /** Asegura que el directorio de imágenes exista */
 function ensureImagesDir() {
   if (!fs.existsSync(IMAGES_DIR)) {
@@ -212,6 +319,26 @@ async function svgToPng(svgString, outputPath) {
     fs.writeFileSync(svgPath, svgString, 'utf-8');
     return svgPath;
   }
+}
+
+/**
+ * Genera la tarjeta PNG de reporte de análisis (individual, hilo o hashtag).
+ * @param {{fuente, bots, total, porcentaje, nivel, fecha, labelBots?}} datos
+ * @returns {string|null} ruta del archivo PNG generado
+ */
+export async function generarTarjetaReporte(datos) {
+  ensureImagesDir();
+
+  const fechaISO = new Date().toISOString().split('T')[0];
+  const safeFuente = String(datos.fuente)
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 20) || 'reporte';
+  const filename = `reporte_${safeFuente}_${fechaISO}.png`;
+  const outputPath = path.join(IMAGES_DIR, filename);
+
+  console.log(`🎨 Generando tarjeta de reporte: ${filename}`);
+  const svg = generarSVGReporte(datos);
+  return svgToPng(svg, outputPath);
 }
 
 /**

@@ -9,6 +9,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getWeeklyStats } from './database.js';
 import { generateWeeklyReport } from './claude.js';
+import { generarTarjetaReporte } from './imageGenerator.js';
+import { publishImagePost } from './socialPublisher.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPORTS_DIR = path.join(__dirname, '..', 'reports');
@@ -49,6 +51,13 @@ function getWeekNumber(dateStr) {
   const diff = d - start;
   const oneWeek = 604800000;
   return Math.ceil((diff / oneWeek) + 1);
+}
+
+/** Deriva nivel BAJO/MEDIO/ALTO desde un porcentaje */
+function nivelDesdePct(pct) {
+  if (pct >= 30) return 'ALTO';
+  if (pct >= 15) return 'MEDIO';
+  return 'BAJO';
 }
 
 /**
@@ -129,12 +138,31 @@ export async function generateWeeklyReportFull(blueskyClient) {
     console.log(`  💾 Guardado: reports/${weekStart}/${filename}`);
   }
 
-  // Publicar en Bluesky
+  // Publicar en Bluesky con tarjeta visual
   if (blueskyClient && reportContent.bluesky) {
-    const postResult = await blueskyClient.post(reportContent.bluesky);
-    if (postResult) {
-      console.log(`  ✅ Reporte publicado en Bluesky`);
-    }
+    const top = stats.topHashtags[0] || { hashtag: 'Semana', botPct: stats.porcentaje };
+    const fechaStr = new Date().toLocaleDateString('es-MX', {
+      day: 'numeric', month: 'short', year: 'numeric',
+      timeZone: 'America/Mexico_City',
+    });
+
+    const imagePath = await generarTarjetaReporte({
+      fuente:     `#${top.hashtag}`,
+      bots:       stats.totalBots,
+      total:      stats.totalAnalyzadas,
+      porcentaje: stats.porcentaje,
+      nivel:      nivelDesdePct(stats.porcentaje),
+      fecha:      fechaStr,
+      labelBots:  'BOTS ESTA SEMANA',
+    }).catch(() => null);
+
+    const postResult = await publishImagePost(
+      blueskyClient,
+      imagePath,
+      reportContent.bluesky,
+      'Reporte semanal Bot-ID con porcentaje de bots detectados'
+    );
+    if (postResult) console.log(`  ✅ Reporte publicado en Bluesky`);
   }
 
   console.log(`\n✅ Reporte semana ${weekNum} generado en reports/${weekStart}/`);

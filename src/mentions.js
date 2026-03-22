@@ -8,6 +8,7 @@
  * MODO 3  — escanea #hashtag             → escaneo de hashtag
  */
 
+import fs from 'fs';
 import { analyzeAccount } from './analyzer.js';
 import { generateBotReport } from './claude.js';
 import {
@@ -16,6 +17,7 @@ import {
   isProcessed,
   markProcessed,
 } from './database.js';
+import { generarTarjetaReporte } from './imageGenerator.js';
 
 // ─── Configuración ───────────────────────────────────────────────────────────
 
@@ -196,7 +198,18 @@ async function handleModeAnalyze(mention, blueskyClient) {
     ].join('\n');
   }
 
-  await blueskyClient.replyToPost(mention.uri, mention.cid, texto.slice(0, 299));
+  const nivelTarjeta = (nivel === 'BAJO') ? 'BAJO' : (nivel === 'MEDIO') ? 'MEDIO' : 'ALTO';
+  const imagePath = await generarTarjetaReporte({
+    fuente: `@${targetHandle}`,
+    bots: score,
+    total: 1,
+    porcentaje: score,
+    nivel: nivelTarjeta,
+    fecha: fechaCorta(),
+    labelBots: 'PROBABILIDAD BOT',
+  }).catch(() => null);
+
+  await replyConImagen(blueskyClient, mention, texto.slice(0, 299), imagePath);
   console.log(`  ✅ M1 respondido (@${targetHandle} → ${score}/100)`);
 }
 
@@ -274,7 +287,16 @@ async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) 
     ].join('\n');
   }
 
-  await blueskyClient.replyToPost(mention.uri, mention.cid, respuesta.slice(0, 299));
+  const imagePath = await generarTarjetaReporte({
+    fuente: 'Hilo',
+    bots: botsEncontrados.length,
+    total: analizados,
+    porcentaje: pct,
+    nivel: nivelDesdePct(pct),
+    fecha: fechaCorta(),
+  }).catch(() => null);
+
+  await replyConImagen(blueskyClient, mention, respuesta.slice(0, 299), imagePath);
   console.log(`  ✅ Hilo escaneado (${botsEncontrados.length}/${analizados} bots)`);
 }
 
@@ -415,8 +437,64 @@ async function handleModeHashtag(mention, blueskyClient) {
     `Bot-ID | Transparencia digital`,
   ].join('\n');
 
-  await blueskyClient.replyToPost(mention.uri, mention.cid, respuesta.slice(0, 299));
+  const imagePath = await generarTarjetaReporte({
+    fuente: `#${hashtag}`,
+    bots: botsEncontrados.length,
+    total: analizados,
+    porcentaje: pct,
+    nivel: nivelDesdePct(pct),
+    fecha: fechaCorta(),
+  }).catch(() => null);
+
+  await replyConImagen(blueskyClient, mention, respuesta.slice(0, 299), imagePath);
   console.log(`  ✅ M3 respondido (#${hashtag} → ${botsEncontrados.length}/${analizados} bots)`);
+}
+
+// ─── Helpers de imagen ───────────────────────────────────────────────────────
+
+/** Deriva nivel BAJO/MEDIO/ALTO desde un porcentaje */
+function nivelDesdePct(pct) {
+  if (pct >= 30) return 'ALTO';
+  if (pct >= 15) return 'MEDIO';
+  return 'BAJO';
+}
+
+/** Fecha corta formateada en español para las tarjetas */
+function fechaCorta() {
+  return new Date().toLocaleDateString('es-MX', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    timeZone: 'America/Mexico_City',
+  });
+}
+
+/**
+ * Responde a una mención con imagen adjunta.
+ * Si la generación de imagen falla, envía solo el texto.
+ */
+async function replyConImagen(blueskyClient, mention, texto, imagePath) {
+  if (!imagePath || !fs.existsSync(imagePath)) {
+    return blueskyClient.replyToPost(mention.uri, mention.cid, texto);
+  }
+  try {
+    const imageData = fs.readFileSync(imagePath);
+    const encoding = imagePath.endsWith('.svg') ? 'image/svg+xml' : 'image/png';
+    const blobRef = (await blueskyClient.agent.uploadBlob(imageData, { encoding })).data.blob;
+    const truncated = texto.length > 299 ? texto.slice(0, 296) + '...' : texto;
+    await blueskyClient.agent.post({
+      text: truncated,
+      reply: {
+        root:   { uri: mention.uri, cid: mention.cid },
+        parent: { uri: mention.uri, cid: mention.cid },
+      },
+      embed: {
+        $type: 'app.bsky.embed.images',
+        images: [{ image: blobRef, alt: 'Análisis Bot-ID' }],
+      },
+    });
+  } catch (err) {
+    console.warn(`⚠️  Sin imagen en reply: ${err.message}`);
+    return blueskyClient.replyToPost(mention.uri, mention.cid, texto);
+  }
 }
 
 // ─── MODO DESCONOCIDO — Detección automática de contexto ─────────────────────
