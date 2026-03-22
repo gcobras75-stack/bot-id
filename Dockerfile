@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y \
     fontconfig \
     fonts-liberation \
     fonts-dejavu-core \
+    build-essential \
+    python3 \
     --no-install-recommends \
   && fc-cache -fv \
   && rm -rf /var/lib/apt/lists/*
