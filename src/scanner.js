@@ -6,22 +6,16 @@
 import cron from 'node-cron';
 import { analyzeAccount } from './analyzer.js';
 import { saveAccount, saveWeeklyScan } from './database.js';
+import { generarTarjetaReporte } from './imageGenerator.js';
+import { publishImagePost } from './socialPublisher.js';
 
-// Hashtags a monitorear (política y temas sensibles en México)
-const HASHTAGS_MONITOREADOS = [
-  'México',
-  'Sinaloa',
-  'Culiacán',
-  'Elecciones',
-  'Política',
-  'Morena',
-  'AMLO',
-  'Sheinbaum',
-  'México2026',
-  'Elecciones2026',
-  'Seguridad',
-  'Narco',
-];
+// Hashtags agrupados por frecuencia de monitoreo
+const GRUPOS_HASHTAGS = {
+  min15: ['Trump', 'Iran', 'Noticias'],
+  min20: ['Mexico', 'Politica'],
+  min30: ['Finanzas', 'IA', 'AI', 'ArtificialIntelligence'],
+  min60: ['Sinaloa', 'EleccionesMX', 'Sheinbaum', 'Narco', 'Guerra', 'Corrupcion'],
+};
 
 // Umbral para considerar un cluster de bots
 const CLUSTER_THRESHOLD = 30;
@@ -122,29 +116,48 @@ async function scanHashtag(hashtag, blueskyClient) {
 }
 
 /**
- * Genera y publica alerta de cluster de bots
- * @param {string} hashtag
- * @param {Array}  botHandles
+ * Genera y publica alerta de cluster de bots con tarjeta visual PNG.
+ * @param {object} resultado - objeto completo del escaneo
  * @param {BlueskyClient} blueskyClient
  */
-async function publicarAlertaCluster(hashtag, botHandles, blueskyClient) {
-  const topBots = botHandles.slice(0, 3).map((b) => `@${b.handle} (${b.score}%)`).join(', ');
+async function publicarAlertaCluster(resultado, blueskyClient) {
+  const { hashtag, botsDetected, percentage, accountsFound } = resultado;
 
-  const alerta = `🚨 ALERTA BOT-ID
+  const hora = new Date().toLocaleTimeString('es-MX', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'America/Mexico_City',
+  });
+  const fecha = new Date().toLocaleDateString('es-MX', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    timeZone: 'America/Mexico_City',
+  });
+  const nivel = percentage >= 30 ? 'ALTO' : percentage >= 15 ? 'MEDIO' : 'BAJO';
+  const link = `https://bsky.app/search?q=%23${encodeURIComponent(hashtag)}`;
+
+  const alerta = `🚨 ALERTA BOT-ID — #${hashtag}
 ━━━━━━━━━━━━━━━
-📌 #${hashtag}
-🤖 Cluster de ${botHandles.length} bots detectados operando juntos
+🤖 ${botsDetected} bots detectados (${percentage}% del debate)
+🕐 ${hora} · ${fecha}
+🔍 ${link}
 
-Top sospechosos:
-${topBots}
-
-¿Coordinación artificial del debate? Los datos sugieren que sí.
-
+¿Coordinación artificial? Los datos sugieren que sí.
 Sin partido. Sin patrocinador. — Bot-ID`;
 
-  console.log(`\n🚨 ALERTA: Cluster de ${botHandles.length} bots en #${hashtag}`);
-  const result = await blueskyClient.post(alerta);
-  return result;
+  const imagePath = await generarTarjetaReporte({
+    fuente:     `#${hashtag}`,
+    bots:       botsDetected,
+    total:      accountsFound,
+    porcentaje: percentage,
+    nivel,
+    fecha,
+  }).catch(() => null);
+
+  console.log(`\n🚨 ALERTA: ${botsDetected} bots (${percentage}%) en #${hashtag}`);
+  return publishImagePost(
+    blueskyClient,
+    imagePath,
+    alerta,
+    `Alerta Bot-ID: ${botsDetected} bots en #${hashtag}`
+  );
 }
 
 /**
@@ -156,7 +169,8 @@ export async function runScan(blueskyClient) {
   const { weekStart, weekEnd } = getWeekRange();
   const resultados = [];
 
-  for (const hashtag of HASHTAGS_MONITOREADOS) {
+  const todosHashtags = Object.values(GRUPOS_HASHTAGS).flat();
+  for (const hashtag of todosHashtags) {
     const resultado = await scanHashtag(hashtag, blueskyClient);
     resultados.push(resultado);
 
@@ -174,7 +188,7 @@ export async function runScan(blueskyClient) {
 
     // Detectar cluster de bots
     if (resultado.botsDetected >= CLUSTER_THRESHOLD) {
-      await publicarAlertaCluster(resultado.hashtag, resultado.botHandles, blueskyClient);
+      await publicarAlertaCluster(resultado, blueskyClient);
     }
 
     // Pausa entre hashtags
@@ -197,21 +211,62 @@ export async function runScan(blueskyClient) {
 }
 
 /**
- * Inicia el scanner programado cada 6 horas
+ * Inicia el monitor de hashtags con frecuencias diferenciadas.
  * @param {BlueskyClient} blueskyClient
  */
 export function startScanner(blueskyClient) {
-  // Ejecutar cada 6 horas: 0:00, 6:00, 12:00, 18:00 hora México (UTC-6)
-  // En cron: '0 6,12,18,0 * * *'  (UTC)
-  cron.schedule('0 0,6,12,18 * * *', async () => {
-    try {
-      await runScan(blueskyClient);
-    } catch (err) {
-      console.error('Error en ciclo de scanner:', err.message);
+
+  // Escanea todos los hashtags de un grupo y publica alertas si corresponde
+  const escanearGrupo = async (grupo) => {
+    const { weekStart, weekEnd } = getWeekRange();
+    for (const hashtag of GRUPOS_HASHTAGS[grupo]) {
+      const resultado = await scanHashtag(hashtag, blueskyClient);
+      if (resultado.accountsFound > 0) {
+        saveWeeklyScan({
+          hashtag: resultado.hashtag,
+          accountsFound: resultado.accountsFound,
+          botsDetected: resultado.botsDetected,
+          percentage: resultado.percentage,
+          weekStart,
+          weekEnd,
+        });
+      }
+      if (resultado.botsDetected >= CLUSTER_THRESHOLD) {
+        await publicarAlertaCluster(resultado, blueskyClient);
+      }
+      await sleep(3000);
     }
+  };
+
+  // Cada 15 min: Trump, Iran, Noticias
+  cron.schedule('*/15 * * * *', async () => {
+    try { await escanearGrupo('min15'); }
+    catch (err) { console.error('Error scanner 15min:', err.message); }
   });
 
-  console.log('🔍 Scanner proactivo activo (cada 6 horas: 0:00, 6:00, 12:00, 18:00 UTC)');
+  // Cada 20 min: Mexico, Politica
+  cron.schedule('*/20 * * * *', async () => {
+    try { await escanearGrupo('min20'); }
+    catch (err) { console.error('Error scanner 20min:', err.message); }
+  });
+
+  // Cada 30 min: Finanzas, IA, AI, ArtificialIntelligence
+  cron.schedule('*/30 * * * *', async () => {
+    try { await escanearGrupo('min30'); }
+    catch (err) { console.error('Error scanner 30min:', err.message); }
+  });
+
+  // Cada 60 min: Sinaloa, EleccionesMX, Sheinbaum, Narco, Guerra, Corrupcion
+  cron.schedule('0 * * * *', async () => {
+    try { await escanearGrupo('min60'); }
+    catch (err) { console.error('Error scanner 60min:', err.message); }
+  });
+
+  console.log('🔍 Monitor de hashtags activo:');
+  console.log('   → Cada 15 min: Trump, Iran, Noticias');
+  console.log('   → Cada 20 min: Mexico, Politica');
+  console.log('   → Cada 30 min: Finanzas, IA, AI, ArtificialIntelligence');
+  console.log('   → Cada 60 min: Sinaloa, EleccionesMX, Sheinbaum, Narco, Guerra, Corrupcion');
 }
 
 function sleep(ms) {
