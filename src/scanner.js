@@ -202,58 +202,14 @@ export async function runScan(blueskyClient) {
  * @param {BlueskyClient} blueskyClient
  */
 export function startScanner(blueskyClient) {
-
-  // Escanea todos los hashtags de un grupo y publica alertas si corresponde
-  const escanearGrupo = async (grupo) => {
-    const { weekStart, weekEnd } = getWeekRange();
-    for (const hashtag of GRUPOS_HASHTAGS[grupo]) {
-      const resultado = await scanHashtag(hashtag, blueskyClient);
-      if (resultado.accountsFound > 0) {
-        saveWeeklyScan({
-          hashtag: resultado.hashtag,
-          accountsFound: resultado.accountsFound,
-          botsDetected: resultado.botsDetected,
-          percentage: resultado.percentage,
-          weekStart,
-          weekEnd,
-        });
-      }
-      if (resultado.botsDetected >= CLUSTER_THRESHOLD) {
-        await publicarAlertaCluster(resultado, blueskyClient);
-      }
-      await sleep(3000);
-    }
-  };
-
-  // Cada 15 min: Trump, Iran, Noticias
-  cron.schedule('*/15 * * * *', async () => {
-    try { await escanearGrupo('min15'); }
-    catch (err) { console.error('Error scanner 15min:', err.message); }
+  // Una vez al día a las 9:00am hora México (15:00 UTC, México no usa DST desde 2023)
+  cron.schedule('0 15 * * *', async () => {
+    try { await runScan(blueskyClient); }
+    catch (err) { console.error('Error en scanner diario:', err.message); }
   });
 
-  // Cada 20 min: Mexico, Politica
-  cron.schedule('*/20 * * * *', async () => {
-    try { await escanearGrupo('min20'); }
-    catch (err) { console.error('Error scanner 20min:', err.message); }
-  });
-
-  // Cada 30 min: Finanzas, IA, AI, ArtificialIntelligence
-  cron.schedule('*/30 * * * *', async () => {
-    try { await escanearGrupo('min30'); }
-    catch (err) { console.error('Error scanner 30min:', err.message); }
-  });
-
-  // Cada 60 min: Sinaloa, EleccionesMX, Sheinbaum, Narco, Guerra, Corrupcion
-  cron.schedule('0 * * * *', async () => {
-    try { await escanearGrupo('min60'); }
-    catch (err) { console.error('Error scanner 60min:', err.message); }
-  });
-
-  console.log('🔍 Monitor de hashtags activo:');
-  console.log('   → Cada 15 min: Trump, Iran, Noticias');
-  console.log('   → Cada 20 min: Mexico, Politica');
-  console.log('   → Cada 30 min: Finanzas, IA, AI, ArtificialIntelligence');
-  console.log('   → Cada 60 min: Sinaloa, EleccionesMX, Sheinbaum, Narco, Guerra, Corrupcion');
+  console.log('🔍 Scanner diario activo — 9:00am México (15:00 UTC)');
+  console.log('   → 15 hashtags, una vez al día');
 }
 
 function sleep(ms) {
