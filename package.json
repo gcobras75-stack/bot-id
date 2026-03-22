@@ -8,7 +8,13 @@
     "start": "node index.js",
     "dev": "node --watch index.js"
   },
-  "keywords": ["bot-detection", "bluesky", "transparency", "mexico", "activism"],
+  "keywords": [
+    "bot-detection",
+    "bluesky",
+    "transparency",
+    "mexico",
+    "activism"
+  ],
   "author": "Bot-ID Anonymous",
   "license": "MIT",
   "dependencies": {
@@ -16,6 +22,7 @@
     "@atproto/api": "^0.13.0",
     "better-sqlite3": "^11.0.0",
     "dotenv": "^16.4.0",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "sharp": "^0.33.5"
   }
 }

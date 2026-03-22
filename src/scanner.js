@@ -24,7 +24,7 @@ const HASHTAGS_MONITOREADOS = [
 ];
 
 // Umbral para considerar un cluster de bots
-const CLUSTER_THRESHOLD = 5;
+const CLUSTER_THRESHOLD = 30;
 const BOT_SCORE_THRESHOLD = parseInt(process.env.BOT_ALERT_THRESHOLD || '75', 10);
 
 /**

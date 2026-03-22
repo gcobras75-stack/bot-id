@@ -22,8 +22,8 @@ import {
 const MAX_PER_USER_PER_HOUR = parseInt(process.env.MAX_ANALYSES_PER_HOUR || '10', 10);
 const BOT_THRESHOLD = 75;   // score >= este valor → bot (🔴)
 const DUD_THRESHOLD = 50;   // score >= este valor → dudoso (🟡)
-const MAX_THREAD_ACCOUNTS = 20;   // máximo de cuentas a analizar en un hilo
-const MAX_HASHTAG_ACCOUNTS = 20;  // máximo de cuentas a analizar en un hashtag
+const MAX_THREAD_ACCOUNTS = 200;  // máximo de cuentas a analizar en un hilo
+const MAX_HASHTAG_ACCOUNTS = 200; // máximo de cuentas a analizar en un hashtag
 
 // Frases que activan el escaneo contextual del hilo actual (modo 2b)
 const CONTEXTUAL_THREAD_RE = /escanea\s+esta\s+conversaci[oó]n|analiza\s+este\s+hilo|escanea\s+aqu[ií]|analiza\s+aqu[ií]|qui[eé]nes\s+son\s+bots\s+aqu[ií]|hay\s+bots\s+aqu[ií]/i;
@@ -419,6 +419,24 @@ async function handleModeHashtag(mention, blueskyClient) {
   console.log(`  ✅ M3 respondido (#${hashtag} → ${botsEncontrados.length}/${analizados} bots)`);
 }
 
+// ─── MODO DESCONOCIDO — Detección automática de contexto ─────────────────────
+
+async function handleModeUnknown(mention, blueskyClient) {
+  // ¿La mención viene dentro de un hilo?
+  const rootUri = mention.record?.reply?.root?.uri;
+  if (rootUri) {
+    console.log(`  [AUTO] Mención en hilo detectada → analizando conversación`);
+    await scanAndReportThread(rootUri, 'ESCANEO AUTOMÁTICO', mention, blueskyClient);
+    return;
+  }
+
+  // Sin contexto claro → mensaje amigable
+  await blueskyClient.replyToPost(
+    mention.uri, mention.cid,
+    `¡Hola! Para analizar bots puedes:\n• Mencionarme en cualquier conversación\n• Enviarme un link de Bluesky\n• Escribir un #hashtag\n\nBot-ID | Transparencia digital`
+  );
+}
+
 // ─── Mensaje de ayuda ─────────────────────────────────────────────────────────
 
 async function replyHelp(mention, blueskyClient) {
@@ -469,7 +487,7 @@ async function processMention(mention, blueskyClient) {
         await handleModeHashtag(mention, blueskyClient);
         break;
       default:
-        await replyHelp(mention, blueskyClient);
+        await handleModeUnknown(mention, blueskyClient);
     }
   } catch (err) {
     console.error(`  ❌ Error procesando mención (${modo}):`, err.message);

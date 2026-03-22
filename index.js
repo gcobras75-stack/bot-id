@@ -11,6 +11,7 @@ import { initDatabase } from './src/database.js';
 import { startMentionsListener } from './src/mentions.js';
 import { startScanner, runScan } from './src/scanner.js';
 import { scheduleWeeklyReport } from './src/reporter.js';
+import { scheduleTrendingPublisher } from './src/publisher.js';
 
 // ─── Validación de variables de entorno ─────────────────────────────────────
 
@@ -88,7 +89,10 @@ async function main() {
   // 5. Programar reporte semanal (lunes 8am México)
   const proximoReporte = scheduleWeeklyReport(bluesky);
 
-  // 6. Status en consola
+  // 6. Programar publicación diaria de imágenes de tendencias
+  scheduleTrendingPublisher(bluesky);
+
+  // 7. Status en consola
   console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ Bot-ID activo
@@ -103,7 +107,7 @@ indicando el @handle a revisar en Bluesky.
 Presiona Ctrl+C para detener.
 `);
 
-  // 7. Ejecutar un primer escaneo al iniciar (en background)
+  // 8. Ejecutar un primer escaneo al iniciar (en background)
   console.log('🔄 Ejecutando escaneo inicial en segundo plano...');
   runScan(bluesky).catch((err) => {
     console.error('Error en escaneo inicial:', err.message);
