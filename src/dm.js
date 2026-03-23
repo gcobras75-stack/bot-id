@@ -342,8 +342,19 @@ async function analyzeHashtagForDMWithCoordination(hashtag, bluesky, ctx) {
 
 const ADMIN_HANDLE = (process.env.ADMIN_BLUESKY_HANDLE || '').replace('@', '').toLowerCase();
 
+/**
+ * Compara el handle del remitente contra ADMIN_BLUESKY_HANDLE.
+ * Tolerante a si el env tiene "duendess" o "duendess.bsky.social".
+ */
 function isAdmin(handle) {
-  return ADMIN_HANDLE && handle.toLowerCase() === ADMIN_HANDLE;
+  if (!ADMIN_HANDLE) return false;
+  const h = handle.toLowerCase();
+  // Coincidencia exacta, o uno es el prefijo del otro antes de primer '.'
+  return (
+    h === ADMIN_HANDLE ||
+    h.startsWith(ADMIN_HANDLE + '.') ||
+    ADMIN_HANDLE.startsWith(h + '.')
+  );
 }
 
 /**
@@ -562,7 +573,7 @@ async function processDM(convo, bluesky) {
   const senderMember = (convo.members || []).find((m) => m.did === senderDid);
   const senderHandle = senderMember?.handle || senderDid || 'unknown';
 
-  console.log(`📨 [DM] @${senderHandle}: "${text.slice(0, 60)}"`);
+  console.log(`📨 [DM] @${senderHandle}: "${text.slice(0, 60)}" | isAdmin=${isAdmin(senderHandle)}`);
 
   // ── Comandos !admin (solo para el admin) ─────────────────────────────────
   if (isAdmin(senderHandle)) {
@@ -593,7 +604,12 @@ async function processDM(convo, bluesky) {
   }
 
   // ── Plan gate for analysis ────────────────────────────────────────────────
-  const ctx = buildUserContext(senderHandle);
+  // El admin siempre obtiene contexto EMPRESARIAL, sin importar el estado en DB
+  const ctx = isAdmin(senderHandle)
+    ? { handle: senderHandle, plan: 'EMPRESARIAL', canUseCoordination: true,
+        maxCuentas: 5000, canProceed: true, blockMessage: null }
+    : buildUserContext(senderHandle);
+
   if (!ctx.canProceed) {
     await bluesky.sendDM(convoId, ctx.blockMessage);
     processedMessages.add(msgId);
@@ -647,6 +663,9 @@ async function processDM(convo, bluesky) {
 // ─── Listener principal ───────────────────────────────────────────────────────
 
 export function startDMListener(bluesky) {
+  // Log de diagnóstico: mostrar qué handle de admin se cargó
+  console.log(`👤 [admin] ADMIN_BLUESKY_HANDLE="${process.env.ADMIN_BLUESKY_HANDLE || '(no configurado)'}" → ADMIN_HANDLE="${ADMIN_HANDLE || '(vacío)'}"`);
+
   // Auto-elevar al admin a plan EMPRESARIAL si aún no lo es
   if (ADMIN_HANDLE) {
     try {
@@ -655,6 +674,8 @@ export function startDMListener(bluesky) {
     } catch (err) {
       console.warn(`⚠️ [admin] No se pudo configurar plan admin: ${err.message}`);
     }
+  } else {
+    console.warn('⚠️ [admin] ADMIN_BLUESKY_HANDLE no está configurado en las variables de entorno');
   }
 
   const tick = async () => {
