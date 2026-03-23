@@ -15,6 +15,7 @@ import { scheduleTrendingPublisher } from './src/publisher.js';
 import { initCostMonitor } from './src/costMonitor.js';
 import { startPatrol } from './src/patrol.js';
 import { startDMListener } from './src/dm.js';
+import { scheduleDailyPosts } from './src/dailyPosts.js';
 
 // ─── Validación de variables de entorno ─────────────────────────────────────
 
@@ -95,13 +96,16 @@ async function main() {
   // 6. Iniciar scanner proactivo (cada 6 horas)
   startScanner(bluesky);
 
-  // 8. Programar reporte semanal (lunes 8am México)
+  // 7. Programar reporte semanal (lunes 8am México)
   const proximoReporte = scheduleWeeklyReport(bluesky);
 
-  // 9. Programar publicación diaria de imágenes de tendencias
+  // 8. Programar publicación diaria de imágenes de tendencias
   scheduleTrendingPublisher(bluesky);
 
-  // 10. Iniciar monitor de costos API
+  // 10. Programar posts diarios automáticos (9am, 3pm, 8pm México)
+  scheduleDailyPosts(bluesky);
+
+  // 11. Iniciar monitor de costos API
   initCostMonitor(bluesky);
 
   // Status en consola
@@ -111,8 +115,9 @@ async function main() {
 📡 Modo 1 — Patrulla proactiva (cada 10 min)
 💬 Modo 2 — Comandos: !bots, !scan, !verificar
 📨 Modo 3 — DMs privados (cada 2 min)
-🔍 Scanner hashtags: activo (cada 6h)
-📊 Próximo reporte: ${proximoReporte}
+🔍 Scanner hashtags (cada 6h)
+📅 Posts diarios: 9am, 3pm, 8pm (hora México)
+📊 Próximo reporte semanal: ${proximoReporte}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Para detección discreta: envía DM a @${process.env.BLUESKY_USERNAME}
@@ -120,7 +125,7 @@ Para detección discreta: envía DM a @${process.env.BLUESKY_USERNAME}
 Presiona Ctrl+C para detener.
 `);
 
-  // 11. Ejecutar un primer escaneo al iniciar (en background)
+  // 12. Ejecutar un primer escaneo al iniciar (en background)
   console.log('🔄 Ejecutando escaneo inicial en segundo plano...');
   runScan(bluesky).catch((err) => {
     console.error('Error en escaneo inicial:', err.message);
