@@ -5,6 +5,8 @@
  * Si Groq falla o devuelve INCIERTO, escala a Claude API (Capa 3).
  */
 
+import { recordGroqCall } from './costMonitor.js';
+
 const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL    = 'llama-3.1-70b-versatile';
 const CONFIDENCE_THRESHOLD = 70; // mínimo para aceptar veredicto de Groq
@@ -88,6 +90,14 @@ export async function analizarConGroq(profileData, postHistory, c1) {
   const data    = await response.json();
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error('Groq devolvió respuesta vacía');
+
+  // Registrar uso de tokens (free tier, $0 real)
+  if (data.usage) {
+    recordGroqCall({
+      inputTokens:  data.usage.prompt_tokens     ?? 0,
+      outputTokens: data.usage.completion_tokens ?? 0,
+    });
+  }
 
   const result = JSON.parse(content);
 

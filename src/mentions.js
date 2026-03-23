@@ -24,6 +24,7 @@ import { optedOut } from './state.js';
 // ─── Configuración ───────────────────────────────────────────────────────────
 
 const MAX_PER_USER_PER_HOUR = parseInt(process.env.MAX_ANALYSES_PER_HOUR || '10', 10);
+const MAX_PARALLEL          = 5; // máximo de análisis simultáneos
 const BOT_THRESHOLD = 75;   // score >= este valor → bot (🔴)
 const DUD_THRESHOLD = 50;   // score >= este valor → dudoso (🟡)
 const MAX_THREAD_ACCOUNTS = 200;  // máximo de cuentas a analizar en un hilo
@@ -777,16 +778,12 @@ export function startMentionsListener(blueskyClient) {
       if (newCursor) cursor = newCursor;
 
       if (mentions.length > 0) {
-        console.log(`\n📬 ${mentions.length} mención(es) nueva(s)`);
-      }
-
-      for (const mention of mentions) {
-        try {
-          await processMention(mention, blueskyClient);
-          await sleep(2000);
-        } catch (err) {
-          console.error(`Error procesando mención ${mention.uri}:`, err.message);
-        }
+        console.log(`\n📬 ${mentions.length} mención(es) → paralelo (máx ${MAX_PARALLEL})`);
+        await runConcurrent(
+          mentions,
+          (m) => processMention(m, blueskyClient),
+          MAX_PARALLEL
+        );
       }
     } catch (err) {
       console.error('Error en tick de menciones:', err.message);
@@ -798,52 +795,62 @@ export function startMentionsListener(blueskyClient) {
   // ── Polling secundario: variantes + comandos cortos (cada 5 min) ────────
   const tickVariants = async () => {
     const botHandle = (process.env.BLUESKY_USERNAME || '').replace('@', '').toLowerCase();
+    const toProcess = []; // { type: 'mention'|'command', post }
 
-    // — Variantes del nombre sin @ —
+    // — Recopilar variantes del nombre sin @ —
     try {
       const posts = await searchVariantMentions(blueskyClient);
       for (const post of posts) {
-        const text = post.record?.text || '';
+        const text         = post.record?.text || '';
         const authorHandle = post.author?.handle || '';
         if (authorHandle.toLowerCase() === botHandle) continue;
         if (!BOT_NAME_VARIANTS_RE.test(text) || !SOLICITUD_RE.test(text)) continue;
         if (isProcessed(post.uri)) continue;
-        console.log(`🔍 Variante detectada de @${authorHandle}: "${text.slice(0, 60)}..."`);
-        await processMention(post, blueskyClient);
-        await sleep(2000);
+        toProcess.push({ type: 'mention', post });
       }
     } catch (err) {
       console.error('Error en búsqueda de variantes:', err.message);
     }
 
-    // — Modo 2: comandos cortos !bots / !scan / !verificar —
+    // — Recopilar comandos cortos !bots / !scan / !verificar —
     try {
       const cmdPosts = await searchShortCommands(blueskyClient);
       for (const post of cmdPosts) {
-        const text = post.record?.text || '';
+        const text         = post.record?.text || '';
         const authorHandle = post.author?.handle || '';
         if (authorHandle.toLowerCase() === botHandle) continue;
         if (!SHORT_COMMAND_RE.test(text)) continue;
-        // Requiere estar en un hilo (no post suelto)
-        const rootUri = post.record?.reply?.root?.uri;
-        if (!rootUri) continue;
+        if (!post.record?.reply?.root?.uri) continue; // debe estar en un hilo
         if (isProcessed(post.uri)) continue;
-
-        console.log(`⚡ [M2] Comando corto de @${authorHandle}: "${text.slice(0, 40)}"`);
-        // Tratar como "escanea esta conversación"
-        const pseudoMention = {
-          uri: post.uri,
-          cid: post.cid,
-          author: post.author,
-          record: post.record,
-        };
-        await scanAndReportThread(rootUri, 'ESCANEO RÁPIDO (!bots)', pseudoMention, blueskyClient);
-        markProcessed({ mentionUri: post.uri, requesterHandle: authorHandle, targetHandle: null });
-        await sleep(2000);
+        toProcess.push({ type: 'command', post });
       }
     } catch (err) {
       console.error('Error en búsqueda de comandos cortos:', err.message);
     }
+
+    if (toProcess.length === 0) return;
+
+    console.log(`\n🔍 ${toProcess.length} variante(s)/comando(s) → paralelo (máx ${MAX_PARALLEL})`);
+
+    await runConcurrent(
+      toProcess,
+      async ({ type, post }) => {
+        const text         = post.record?.text || '';
+        const authorHandle = post.author?.handle || '';
+
+        if (type === 'mention') {
+          console.log(`🔍 Variante de @${authorHandle}: "${text.slice(0, 60)}"`);
+          await processMention(post, blueskyClient);
+        } else {
+          const rootUri = post.record.reply.root.uri;
+          console.log(`⚡ [M2] Comando de @${authorHandle}: "${text.slice(0, 40)}"`);
+          const pseudo = { uri: post.uri, cid: post.cid, author: post.author, record: post.record };
+          await scanAndReportThread(rootUri, 'ESCANEO RÁPIDO (!bots)', pseudo, blueskyClient);
+          markProcessed({ mentionUri: post.uri, requesterHandle: authorHandle, targetHandle: null });
+        }
+      },
+      MAX_PARALLEL
+    );
   };
 
   tick();
@@ -856,4 +863,38 @@ export function startMentionsListener(blueskyClient) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Ejecuta fn sobre cada item con máximo maxConcurrency tareas simultáneas.
+ * Los errores individuales se capturan y loggean — no detienen el resto.
+ * @param {any[]} items
+ * @param {(item: any) => Promise<any>} fn
+ * @param {number} maxConcurrency
+ */
+function runConcurrent(items, fn, maxConcurrency) {
+  if (items.length === 0) return Promise.resolve();
+
+  const queue = [...items];
+  let active = 0;
+  let resolveDone;
+  const done = new Promise((res) => { resolveDone = res; });
+
+  function next() {
+    while (active < maxConcurrency && queue.length > 0) {
+      const item = queue.shift();
+      active++;
+      fn(item)
+        .catch((err) => console.error('  ❌ [paralelo]:', err.message))
+        .finally(() => {
+          active--;
+          if (queue.length > 0) next();
+          else if (active === 0) resolveDone();
+        });
+    }
+    if (queue.length === 0 && active === 0) resolveDone();
+  }
+
+  next();
+  return done;
 }
