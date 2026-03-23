@@ -10,6 +10,7 @@
 
 import fs from 'fs';
 import { analyzeAccount, analyzeAccountsBatch, capa1 } from './analyzer.js';
+import { analizarConGroq } from './groq.js';
 import { generateBotReport } from './claude.js';
 import {
   saveAccount,
@@ -230,8 +231,67 @@ async function handleModeAnalyze(mention, blueskyClient) {
     return;
   }
 
-  // ── SOSPECHOSO → análisis profundo con Claude API ────────────────────────
-  console.log(`  [C1] SOSPECHOSO → escalando a Claude API...`);
+  // ── SOSPECHOSO → Capa 2: Groq API (llama-3.1-70b) ───────────────────────
+  console.log(`  [C1] SOSPECHOSO → intentando Capa 2 (Groq)...`);
+
+  let usedGroq = false;
+  try {
+    const g = await analizarConGroq(profileData, postHistory, c1);
+    console.log(`  [C2] Groq → ${g.veredicto} (confianza: ${g.confianza}%)`);
+
+    if (g.veredicto === 'BOT') {
+      const listaRazones = g.razones.slice(0, 3).map((r) => `• ${r}`).join('\n');
+      const texto = [
+        `🔴 BOT DETECTADO — @${targetHandle}`,
+        `━━━━━━━━━━━━━━━`,
+        `Confianza: ${g.confianza}% (Groq/Llama)`,
+        listaRazones,
+        ``,
+        `📊 Bot-ID | Análisis IA`,
+      ].join('\n');
+
+      const imagePath = await generarTarjetaReporte({
+        fuente: `@${targetHandle}`,
+        bots: g.confianza,
+        total: 100,
+        porcentaje: g.confianza,
+        nivel: 'ALTO',
+        fecha: fechaCorta(),
+        labelBots: 'CONFIANZA BOT (C2)',
+      }).catch(() => null);
+
+      saveAccount({ handle: targetHandle, did: profileData.did, score: g.confianza,
+        nivel: 'ALTO', señales: g.razones.map((r) => ({ señal: r })), requestedBy: requesterHandle });
+      await replyConImagen(blueskyClient, mention, texto.slice(0, 299), imagePath);
+      console.log(`  ✅ M1-BOT respondido por Groq (@${targetHandle})`);
+      return;
+    }
+
+    if (g.veredicto === 'HUMANO') {
+      const texto = [
+        `🟢 CUENTA HUMANA — @${targetHandle}`,
+        `━━━━━━━━━━━━━━━`,
+        `Sin indicios de bot (confianza: ${g.confianza}%)`,
+        ``,
+        `📊 Bot-ID | Análisis IA`,
+      ].join('\n');
+
+      saveAccount({ handle: targetHandle, did: profileData.did, score: 100 - g.confianza,
+        nivel: 'BAJO', señales: [], requestedBy: requesterHandle });
+      await blueskyClient.replyToPost(mention.uri, mention.cid, texto);
+      console.log(`  ✅ M1-HUMANO respondido por Groq (@${targetHandle})`);
+      return;
+    }
+
+    // INCIERTO → cae al bloque de Claude
+    console.log(`  [C2] Groq devolvió INCIERTO → escalando a Claude API...`);
+    usedGroq = true;
+  } catch (err) {
+    console.warn(`  ⚠️  Groq falló (${err.message}) → escalando a Claude API...`);
+  }
+
+  // ── Capa 3: Claude API (solo si Groq falló o devolvió INCIERTO) ───────────
+  console.log(`  [C3] Análisis profundo con Claude API...`);
 
   const analysis = analyzeAccount(profileData, postHistory);
   saveAccount({ handle: targetHandle, did: profileData.did, score: analysis.score,
@@ -274,7 +334,7 @@ async function handleModeAnalyze(mention, blueskyClient) {
   }).catch(() => null);
 
   await replyConImagen(blueskyClient, mention, texto.slice(0, 299), imagePath);
-  console.log(`  ✅ M1-SOSPECHOSO respondido (@${targetHandle} → ${score}/100 con Claude)`);
+  console.log(`  ✅ M1-SOSPECHOSO respondido por Claude (@${targetHandle} → ${score}/100)`);
 }
 
 // ─── MODO 2 — Escaneo de hilo (lógica compartida) ────────────────────────────
