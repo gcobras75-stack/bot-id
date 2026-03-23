@@ -230,6 +230,111 @@ export class BlueskyClient {
     }
   }
 
+  // ─── API de Chat / DMs ──────────────────────────────────────────────────────
+
+  /**
+   * Cabeceras de autenticación para la API de chat (atproto-proxy).
+   * Llama al PDS de Bluesky, que redirige al servicio de chat.
+   */
+  _chatHeaders() {
+    const token = this.agent.session?.accessJwt;
+    if (!token) throw new Error('Sin sesión activa para Chat API');
+    return {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'atproto-proxy': 'did:web:api.bsky.chat#bsky_chat',
+    };
+  }
+
+  /**
+   * Lista conversaciones con mensajes no leídos.
+   * @returns {Promise<object[]>} array de convo views
+   */
+  async listUnreadConvos(limit = 20) {
+    this._requireLogin();
+    try {
+      const res = await fetch(
+        `https://bsky.social/xrpc/chat.bsky.convo.listConvos?limit=${limit}`,
+        { headers: this._chatHeaders() }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+      const data = await res.json();
+      return (data.convos || []).filter((c) => c.unreadCount > 0);
+    } catch (err) {
+      console.error('Error listando convos:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Obtiene los mensajes de una conversación.
+   * @param {string} convoId
+   * @param {number} limit
+   * @returns {Promise<object[]>} mensajes (más reciente primero)
+   */
+  async getConvoMessages(convoId, limit = 20) {
+    this._requireLogin();
+    try {
+      const res = await fetch(
+        `https://bsky.social/xrpc/chat.bsky.convo.getMessages?convoId=${encodeURIComponent(convoId)}&limit=${limit}`,
+        { headers: this._chatHeaders() }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return data.messages || [];
+    } catch (err) {
+      console.error('Error obteniendo mensajes:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * Envía un DM a una conversación.
+   * @param {string} convoId
+   * @param {string} text  (máx 1000 chars)
+   * @returns {Promise<object|null>}
+   */
+  async sendDM(convoId, text) {
+    this._requireLogin();
+    try {
+      const truncated = text.length > 1000 ? text.slice(0, 997) + '...' : text;
+      const res = await fetch('https://bsky.social/xrpc/chat.bsky.convo.sendMessage', {
+        method: 'POST',
+        headers: this._chatHeaders(),
+        body: JSON.stringify({
+          convoId,
+          message: { $type: 'chat.bsky.convo.defs#messageInput', text: truncated },
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+      return await res.json();
+    } catch (err) {
+      console.error('Error enviando DM:', err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Marca una conversación como leída hasta el mensaje indicado.
+   * @param {string} convoId
+   * @param {string} messageId
+   */
+  async markConvoRead(convoId, messageId) {
+    this._requireLogin();
+    try {
+      const res = await fetch('https://bsky.social/xrpc/chat.bsky.convo.updateRead', {
+        method: 'POST',
+        headers: this._chatHeaders(),
+        body: JSON.stringify({ convoId, messageId }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.error('Error marcando convo como leída:', err.message);
+    }
+  }
+
+  // ─── Helpers internos ────────────────────────────────────────────────────────
+
   _requireLogin() {
     if (!this.isLoggedIn) {
       throw new Error('BlueskyClient: debes llamar a login() primero');

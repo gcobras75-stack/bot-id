@@ -19,6 +19,7 @@ import {
   markProcessed,
 } from './database.js';
 import { generarTarjetaReporte } from './imageGenerator.js';
+import { optedOut } from './state.js';
 
 // ─── Configuración ───────────────────────────────────────────────────────────
 
@@ -37,6 +38,12 @@ const BOT_NAME_VARIANTS_RE = /bot-id\.bsky\.social|bot-id\.bluesky\.social|\bbot
 
 // Intención de solicitud de análisis (evita responder menciones de pasada)
 const SOLICITUD_RE = /analiz[ae]|escanea|scan|hay\s+bots|qu[ié]nes\s+son\s+bots|revisa|detecta/i;
+
+// Comandos cortos (Modo 2): !bots, !scan, !verificar
+const SHORT_COMMAND_RE = /^!bots\b|^!scan\b|^!verificar\b/im;
+
+// Opt-out del patrullero
+const OPT_OUT_RE = /\b(para|stop|detente|no\s+interfieras|no\s+m[aá]s\s+bots)\b/i;
 
 // Rate limiting por usuario (en memoria, reset natural cada hora)
 // Map<handle, number[]> — timestamps de cada solicitud
@@ -653,6 +660,17 @@ async function processMention(mention, blueskyClient) {
   // Deduplicación
   if (isProcessed(mentionUri)) return;
 
+  // ── Opt-out del patrullero ────────────────────────────────────────────────
+  if (OPT_OUT_RE.test(text)) {
+    const rootUri = mention.record?.reply?.root?.uri;
+    if (rootUri) {
+      optedOut.add(rootUri);
+      console.log(`  ⛔ Opt-out registrado para hilo ${rootUri.slice(-8)} por @${requesterHandle}`);
+      markProcessed({ mentionUri, requesterHandle, targetHandle: null });
+      return;
+    }
+  }
+
   // Rate limiting por usuario
   if (countUserRequestsLastHour(requesterHandle) >= MAX_PER_USER_PER_HOUR) {
     console.log(`  ⏸️  Rate limit para @${requesterHandle}`);
@@ -722,6 +740,27 @@ async function searchVariantMentions(blueskyClient) {
   });
 }
 
+/**
+ * Busca posts recientes con comandos cortos !bots, !scan, !verificar.
+ */
+async function searchShortCommands(blueskyClient) {
+  const found = [];
+  for (const q of ['!bots', '!scan', '!verificar']) {
+    try {
+      const res = await blueskyClient.agent.app.bsky.feed.searchPosts({ q, limit: 15 });
+      found.push(...(res.data.posts || []));
+    } catch (err) {
+      console.warn(`⚠️  Error buscando comando "${q}":`, err.message);
+    }
+  }
+  const seen = new Set();
+  return found.filter((p) => {
+    if (seen.has(p.uri)) return false;
+    seen.add(p.uri);
+    return true;
+  });
+}
+
 // ─── Listener de polling ──────────────────────────────────────────────────────
 
 export function startMentionsListener(blueskyClient) {
@@ -756,28 +795,54 @@ export function startMentionsListener(blueskyClient) {
     }
   };
 
-  // ── Polling secundario: variantes sin @ en hilos ajenos (cada 5 min) ────
+  // ── Polling secundario: variantes + comandos cortos (cada 5 min) ────────
   const tickVariants = async () => {
     const botHandle = (process.env.BLUESKY_USERNAME || '').replace('@', '').toLowerCase();
+
+    // — Variantes del nombre sin @ —
     try {
       const posts = await searchVariantMentions(blueskyClient);
       for (const post of posts) {
         const text = post.record?.text || '';
         const authorHandle = post.author?.handle || '';
-
-        // Ignorar posts del propio bot
         if (authorHandle.toLowerCase() === botHandle) continue;
-        // Solo procesar si hay variante del nombre Y intención de solicitud
         if (!BOT_NAME_VARIANTS_RE.test(text) || !SOLICITUD_RE.test(text)) continue;
-        // Deduplicación
         if (isProcessed(post.uri)) continue;
-
         console.log(`🔍 Variante detectada de @${authorHandle}: "${text.slice(0, 60)}..."`);
         await processMention(post, blueskyClient);
         await sleep(2000);
       }
     } catch (err) {
       console.error('Error en búsqueda de variantes:', err.message);
+    }
+
+    // — Modo 2: comandos cortos !bots / !scan / !verificar —
+    try {
+      const cmdPosts = await searchShortCommands(blueskyClient);
+      for (const post of cmdPosts) {
+        const text = post.record?.text || '';
+        const authorHandle = post.author?.handle || '';
+        if (authorHandle.toLowerCase() === botHandle) continue;
+        if (!SHORT_COMMAND_RE.test(text)) continue;
+        // Requiere estar en un hilo (no post suelto)
+        const rootUri = post.record?.reply?.root?.uri;
+        if (!rootUri) continue;
+        if (isProcessed(post.uri)) continue;
+
+        console.log(`⚡ [M2] Comando corto de @${authorHandle}: "${text.slice(0, 40)}"`);
+        // Tratar como "escanea esta conversación"
+        const pseudoMention = {
+          uri: post.uri,
+          cid: post.cid,
+          author: post.author,
+          record: post.record,
+        };
+        await scanAndReportThread(rootUri, 'ESCANEO RÁPIDO (!bots)', pseudoMention, blueskyClient);
+        markProcessed({ mentionUri: post.uri, requesterHandle: authorHandle, targetHandle: null });
+        await sleep(2000);
+      }
+    } catch (err) {
+      console.error('Error en búsqueda de comandos cortos:', err.message);
     }
   };
 

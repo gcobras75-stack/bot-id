@@ -13,6 +13,8 @@ import { startScanner, runScan } from './src/scanner.js';
 import { scheduleWeeklyReport } from './src/reporter.js';
 import { scheduleTrendingPublisher } from './src/publisher.js';
 import { initCostMonitor } from './src/costMonitor.js';
+import { startPatrol } from './src/patrol.js';
+import { startDMListener } from './src/dm.js';
 
 // ─── Validación de variables de entorno ─────────────────────────────────────
 
@@ -84,34 +86,41 @@ async function main() {
   // 3. Iniciar listener de menciones (polling cada 60s)
   startMentionsListener(bluesky);
 
-  // 4. Iniciar scanner proactivo (cada 6 horas)
+  // 4. Iniciar patrulla proactiva de hilos (Modo 1, cada 10 min)
+  startPatrol(bluesky);
+
+  // 5. Iniciar listener de DMs privados (Modo 3, cada 2 min)
+  startDMListener(bluesky);
+
+  // 6. Iniciar scanner proactivo (cada 6 horas)
   startScanner(bluesky);
 
-  // 5. Programar reporte semanal (lunes 8am México)
+  // 8. Programar reporte semanal (lunes 8am México)
   const proximoReporte = scheduleWeeklyReport(bluesky);
 
-  // 6. Programar publicación diaria de imágenes de tendencias
+  // 9. Programar publicación diaria de imágenes de tendencias
   scheduleTrendingPublisher(bluesky);
 
-  // 7. Iniciar monitor de costos API
+  // 10. Iniciar monitor de costos API
   initCostMonitor(bluesky);
 
-  // 7. Status en consola
+  // Status en consola
   console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ Bot-ID activo
-📡 Escuchando menciones... (cada 60s)
-🔍 Scanner proactivo: activo (cada 6h)
+📡 Modo 1 — Patrulla proactiva (cada 10 min)
+💬 Modo 2 — Comandos: !bots, !scan, !verificar
+📨 Modo 3 — DMs privados (cada 2 min)
+🔍 Scanner hashtags: activo (cada 6h)
 📊 Próximo reporte: ${proximoReporte}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Para analizar una cuenta: menciona @${process.env.BLUESKY_USERNAME}
-indicando el @handle a revisar en Bluesky.
+Para detección discreta: envía DM a @${process.env.BLUESKY_USERNAME}
 
 Presiona Ctrl+C para detener.
 `);
 
-  // 8. Ejecutar un primer escaneo al iniciar (en background)
+  // 11. Ejecutar un primer escaneo al iniciar (en background)
   console.log('🔄 Ejecutando escaneo inicial en segundo plano...');
   runScan(bluesky).catch((err) => {
     console.error('Error en escaneo inicial:', err.message);
