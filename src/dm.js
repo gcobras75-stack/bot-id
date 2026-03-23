@@ -340,20 +340,24 @@ async function analyzeHashtagForDMWithCoordination(hashtag, bluesky, ctx) {
 
 // ─── Comandos de administrador ────────────────────────────────────────────────
 
-const ADMIN_HANDLE = (process.env.ADMIN_BLUESKY_HANDLE || '').replace('@', '').toLowerCase();
+const ADMIN_HANDLES = (process.env.ADMIN_BLUESKY_HANDLE || 'duendess,katya19')
+  .split(',')
+  .map((h) => h.trim().replace('@', '').toLowerCase())
+  .filter(Boolean);
+
+// Asegurarse de incluir a katya19 (y duendess) como administradores defaults
+if (!ADMIN_HANDLES.includes('katya19')) ADMIN_HANDLES.push('katya19');
+if (!ADMIN_HANDLES.includes('duendess')) ADMIN_HANDLES.push('duendess');
 
 /**
- * Compara el handle del remitente contra ADMIN_BLUESKY_HANDLE.
- * Tolerante a si el env tiene "duendess" o "duendess.bsky.social".
+ * Compara el handle del remitente contra administradores permitidos.
+ * Tolerante a si el handle tiene dominio (ej: "duendess" == "duendess.bsky.social").
  */
 function isAdmin(handle) {
-  if (!ADMIN_HANDLE) return false;
+  if (ADMIN_HANDLES.length === 0) return false;
   const h = handle.toLowerCase();
-  // Coincidencia exacta, o uno es el prefijo del otro antes de primer '.'
-  return (
-    h === ADMIN_HANDLE ||
-    h.startsWith(ADMIN_HANDLE + '.') ||
-    ADMIN_HANDLE.startsWith(h + '.')
+  return ADMIN_HANDLES.some(
+    (admin) => h === admin || h.startsWith(admin + '.') || admin.startsWith(h + '.')
   );
 }
 
@@ -391,7 +395,7 @@ function getTodayDbStats() {
   }
 }
 
-async function handleAdminCommand(cmd, bluesky) {
+async function handleAdminCommand(cmd, bluesky, convoId, senderHandle) {
   switch (cmd.type) {
 
     case 'admin-stats': {
@@ -448,25 +452,60 @@ async function handleAdminCommand(cmd, bluesky) {
         `━━━━━━━━━━━━━━━`,
         `⏱️ Uptime: ${uptimeH}h ${uptimeMin}min`,
         `💵 Costo mes: $${mes.total.toFixed(4)} USD`,
-        `👤 Admin: @${ADMIN_HANDLE} | Plan: EMPRESARIAL`,
+        `👤 Admins: ${ADMIN_HANDLES.map(a => '@'+a).join(', ')} | Plan: EMPRESARIAL`,
       ].join('\n');
     }
 
     case 'admin-test': {
+      // Ack inmediato para que el admin sepa que arrancó
+      await bluesky.sendDM(convoId,
+        `🧪 Iniciando reporte empresarial...\nBuscando hashtags activos, esto tarda ~1 min.`
+      );
+
+      // Probar hashtags en orden hasta encontrar uno con posts suficientes
+      const CANDIDATOS = ['iran', 'guerra', 'mexico', 'elecciones', 'politica', 'noticias'];
+      let mejorHashtag = 'mexico';
+      let mejorPosts   = [];
+
+      for (const ht of CANDIDATOS) {
+        try {
+          const p = await bluesky.searchHashtag(ht, 50);
+          console.log(`  [admin-test] #${ht}: ${p.length} posts`);
+          if (p.length > mejorPosts.length) {
+            mejorPosts   = p;
+            mejorHashtag = ht;
+          }
+          if (mejorPosts.length >= 30) break; // suficiente
+        } catch { /* seguir */ }
+      }
+
       const ctx = {
-        handle: ADMIN_HANDLE,
+        handle: senderHandle,
         plan: 'EMPRESARIAL',
         canUseCoordination: true,
-        maxCuentas: 5000,
+        maxCuentas: 30,
         canProceed: true,
         blockMessage: null,
       };
-      const TEST_HASHTAG = 'politicaMX';
-      const result = await analyzeHashtagForDMWithCoordination(TEST_HASHTAG, bluesky, ctx);
-      return `🧪 REPORTE DE PRUEBA — Plan Empresarial\n` +
-             `Hashtag: #${TEST_HASHTAG}\n` +
-             `━━━━━━━━━━━━━━━\n` +
-             result.texto;
+
+      // Ejecutar análisis completo
+      const result = await analyzeHashtagForDMWithCoordination(mejorHashtag, bluesky, ctx);
+
+      // DM 1: encabezado
+      await bluesky.sendDM(convoId,
+        `🧪 REPORTE EMPRESARIAL — #${mejorHashtag}\n` +
+        `━━━━━━━━━━━━━━━\n` +
+        `📝 Posts escaneados: ${mejorPosts.length}\n` +
+        `🏢 Plan: EMPRESARIAL | Red coordinada: ✅`
+      );
+
+      await sleep(1000);
+
+      // DM 2: análisis completo
+      await bluesky.sendDM(convoId, result.texto);
+
+      console.log(`  ✅ [admin-test] Reporte enviado — #${mejorHashtag} (${result.texto.length} chars)`);
+      return null; // ya manejado internamente
     }
 
     default:
@@ -579,14 +618,15 @@ async function processDM(convo, bluesky) {
   if (isAdmin(senderHandle)) {
     const adminCmd = parseAdminCommand(text);
     if (adminCmd) {
-      const reply = await handleAdminCommand(adminCmd, bluesky);
+      const reply = await handleAdminCommand(adminCmd, bluesky, convoId, senderHandle);
+      // reply===null significa que handleAdminCommand ya envió los DMs internamente
       if (reply) {
         await bluesky.sendDM(convoId, reply);
-        processedMessages.add(msgId);
-        await bluesky.markConvoRead(convoId, msgId);
-        console.log(`  ✅ [DM] Admin comando: ${adminCmd.type}`);
-        return;
       }
+      processedMessages.add(msgId);
+      await bluesky.markConvoRead(convoId, msgId);
+      console.log(`  ✅ [DM] Admin comando: ${adminCmd.type}`);
+      return;
     }
   }
 
@@ -664,18 +704,20 @@ async function processDM(convo, bluesky) {
 
 export function startDMListener(bluesky) {
   // Log de diagnóstico: mostrar qué handle de admin se cargó
-  console.log(`👤 [admin] ADMIN_BLUESKY_HANDLE="${process.env.ADMIN_BLUESKY_HANDLE || '(no configurado)'}" → ADMIN_HANDLE="${ADMIN_HANDLE || '(vacío)'}"`);
+  console.log(`👤 [admin] ADMIN_BLUESKY_HANDLE="${process.env.ADMIN_BLUESKY_HANDLE || '(no configurado)'}" → ADMIN_HANDLES="${ADMIN_HANDLES.join(', ')}"`);
 
   // Auto-elevar al admin a plan EMPRESARIAL si aún no lo es
-  if (ADMIN_HANDLE) {
-    try {
-      creditUser(ADMIN_HANDLE, 0, 'EMPRESARIAL');
-      console.log(`👤 [admin] @${ADMIN_HANDLE} configurado como EMPRESARIAL`);
-    } catch (err) {
-      console.warn(`⚠️ [admin] No se pudo configurar plan admin: ${err.message}`);
+  if (ADMIN_HANDLES.length > 0) {
+    for (const admin of ADMIN_HANDLES) {
+      try {
+        creditUser(admin, 0, 'EMPRESARIAL');
+        console.log(`👤 [admin] @${admin} configurado como EMPRESARIAL`);
+      } catch (err) {
+        console.warn(`⚠️ [admin] No se pudo configurar plan admin para @${admin}: ${err.message}`);
+      }
     }
   } else {
-    console.warn('⚠️ [admin] ADMIN_BLUESKY_HANDLE no está configurado en las variables de entorno');
+    console.warn('⚠️ [admin] No hay administradores configurados');
   }
 
   const tick = async () => {
@@ -705,58 +747,83 @@ export function startDMListener(bluesky) {
  * @param {import('./bluesky.js').BlueskyClient} bluesky
  */
 export async function sendAdminStartupReport(bluesky) {
-  if (!ADMIN_HANDLE) return;
+  if (ADMIN_HANDLES.length === 0) return;
 
-  try {
-    const convo = await bluesky.getOrCreateConvoWithHandle(ADMIN_HANDLE);
-    if (!convo) {
-      console.warn('⚠️ [admin] No se pudo crear convo para reporte de prueba');
-      return;
+  // Buscar el hashtag con más actividad real
+  const CANDIDATOS = ['iran', 'guerra', 'mexico', 'elecciones', 'politica', 'noticias'];
+  let mejorHashtag = 'mexico';
+  let mejorPosts   = [];
+
+  for (const ht of CANDIDATOS) {
+    try {
+      const p = await bluesky.searchHashtag(ht, 50);
+      if (p.length > mejorPosts.length) { mejorPosts = p; mejorHashtag = ht; }
+      if (mejorPosts.length >= 30) break;
+    } catch { /* seguir */ }
+  }
+
+  console.log(`[admin] Analizando #${mejorHashtag} (${mejorPosts.length} posts)...`);
+
+  const resultsByAdmin = {};
+
+  for (const admin of ADMIN_HANDLES) {
+    try {
+      const convo = await bluesky.getOrCreateConvoWithHandle(admin);
+      if (!convo) {
+        console.warn(`⚠️ [admin] No se pudo crear convo para reporte de prueba con @${admin}`);
+        continue;
+      }
+
+      // Mensaje de bienvenida
+      await bluesky.sendDM(convo.id, [
+        `🤖 Bot-ID iniciado correctamente`,
+        `━━━━━━━━━━━━━━━`,
+        `👤 Admin: @${admin}`,
+        `🏢 Plan: EMPRESARIAL (ilimitado)`,
+        ``,
+        `Comandos disponibles:`,
+        `• !admin stats — estadísticas del día`,
+        `• !admin status — estado del sistema`,
+        `• !admin test — reporte de prueba`,
+        `• !creditar @handle 50 — acreditar saldo`,
+        `• !empresarial @handle — cambiar plan`,
+        `• !usuario @handle — ver info de usuario`,
+        ``,
+        `Generando reporte de prueba...`,
+      ].join('\n'));
+
+      const ctx = {
+        handle: admin,
+        plan: 'EMPRESARIAL',
+        canUseCoordination: true,
+        maxCuentas: 30,
+        canProceed: true,
+        blockMessage: null,
+      };
+
+      if (!resultsByAdmin[mejorHashtag]) {
+        resultsByAdmin[mejorHashtag] = await analyzeHashtagForDMWithCoordination(mejorHashtag, bluesky, ctx);
+      }
+      
+      const result = resultsByAdmin[mejorHashtag];
+
+      // DM 1: encabezado del reporte
+      await bluesky.sendDM(convo.id,
+        `🧪 REPORTE EMPRESARIAL — #${mejorHashtag}\n` +
+        `━━━━━━━━━━━━━━━\n` +
+        `📝 Posts escaneados: ${mejorPosts.length}\n` +
+        `🏢 Plan: EMPRESARIAL | Red coordinada: ✅`
+      );
+
+      await sleep(500);
+
+      // DM 2: análisis completo
+      await bluesky.sendDM(convo.id, result.texto);
+
+      console.log(`✅ [admin] Reporte enviado a @${admin} — #${mejorHashtag} (${result.texto.length} chars)`);
+    } catch (err) {
+      console.error(`❌ [admin] Error enviando reporte de prueba a @${admin}: ${err.message}`);
     }
-
-    // Mensaje de bienvenida
-    await bluesky.sendDM(convo.id, [
-      `🤖 Bot-ID iniciado correctamente`,
-      `━━━━━━━━━━━━━━━`,
-      `👤 Admin: @${ADMIN_HANDLE}`,
-      `🏢 Plan: EMPRESARIAL (ilimitado)`,
-      ``,
-      `Comandos disponibles:`,
-      `• !admin stats — estadísticas del día`,
-      `• !admin status — estado del sistema`,
-      `• !admin test — reporte de prueba`,
-      `• !creditar @handle 50 — acreditar saldo`,
-      `• !empresarial @handle — cambiar plan`,
-      `• !usuario @handle — ver info de usuario`,
-      ``,
-      `Generando reporte de prueba...`,
-    ].join('\n'));
-
-    await sleep(2000);
-
-    // Reporte de prueba con hashtag real
-    const ctx = {
-      handle: ADMIN_HANDLE,
-      plan: 'EMPRESARIAL',
-      canUseCoordination: true,
-      maxCuentas: 5000,
-      canProceed: true,
-      blockMessage: null,
-    };
-
-    const TEST_HASHTAG = 'politicaMX';
-    const result = await analyzeHashtagForDMWithCoordination(TEST_HASHTAG, bluesky, ctx);
-
-    await bluesky.sendDM(convo.id,
-      `🧪 REPORTE DE PRUEBA — Formato Empresarial\n` +
-      `Hashtag analizado: #${TEST_HASHTAG}\n` +
-      `━━━━━━━━━━━━━━━\n` +
-      result.texto
-    );
-
-    console.log(`✅ [admin] Reporte de prueba enviado por DM a @${ADMIN_HANDLE}`);
-  } catch (err) {
-    console.error(`❌ [admin] Error enviando reporte de prueba: ${err.message}`);
   }
 }
 
