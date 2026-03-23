@@ -291,6 +291,94 @@ function generarResumen(score, nivel, señales, handle) {
 }
 
 /**
+ * Capa 1 — Clasificación rápida sin Claude API.
+ * 7 reglas con puntos fijos. Resultado: BOT / SOSPECHOSO / HUMANO.
+ * Solo SOSPECHOSO pasa al análisis profundo con Claude.
+ *
+ * @param {object} profileData
+ * @param {Array}  postHistory
+ * @returns {{ puntos: number, veredicto: 'BOT'|'SOSPECHOSO'|'HUMANO', señales: string[] }}
+ */
+export function capa1(profileData, postHistory = []) {
+  let puntos = 0;
+  const señales = [];
+
+  // Regla 1: Cuenta < 30 días → +30
+  const createdAt = profileData.createdAt ? new Date(profileData.createdAt) : null;
+  if (createdAt) {
+    const diasDeVida = (Date.now() - createdAt) / (1000 * 60 * 60 * 24);
+    if (diasDeVida < 30) {
+      puntos += 30;
+      señales.push(`Cuenta nueva (${Math.round(diasDeVida)} días de vida)`);
+    }
+  }
+
+  // Regla 2: Sin foto de perfil → +20
+  if (!profileData.avatar) {
+    puntos += 20;
+    señales.push('Sin foto de perfil');
+  }
+
+  // Regla 3: Más de 50 posts/día → +25
+  if (postHistory.length >= 2) {
+    const fechas = postHistory
+      .map((p) => new Date(p.record?.createdAt || p.indexedAt))
+      .filter((d) => !isNaN(d))
+      .sort((a, b) => b - a);
+    if (fechas.length >= 2) {
+      const rangoDias = (fechas[0] - fechas[fechas.length - 1]) / (1000 * 60 * 60 * 24) || 1;
+      const postsPorDia = fechas.length / rangoDias;
+      if (postsPorDia > 50) {
+        puntos += 25;
+        señales.push(`Volumen extremo: ${Math.round(postsPorDia)} posts/día`);
+      }
+    }
+  }
+
+  // Regla 4: Ratio seguidores/seguidos < 0.02 → +20
+  const followers = profileData.followersCount ?? 0;
+  const follows   = profileData.followsCount   ?? 0;
+  if (follows > 0 && followers / follows < 0.02) {
+    puntos += 20;
+    señales.push(`Ratio seguidores/seguidos: ${(followers / follows).toFixed(3)} (umbral: 0.02)`);
+  }
+
+  // Regla 5: Bio vacía → +10
+  if (!profileData.description || profileData.description.trim().length === 0) {
+    puntos += 10;
+    señales.push('Bio vacía');
+  }
+
+  // Regla 6: Solo postea entre 2am y 5am UTC → +30
+  if (postHistory.length >= 5) {
+    const horas = postHistory
+      .map((p) => new Date(p.record?.createdAt || p.indexedAt))
+      .filter((d) => !isNaN(d))
+      .map((d) => d.getUTCHours());
+    const fueraNocturna = horas.filter((h) => h < 2 || h >= 5).length;
+    if (fueraNocturna === 0) {
+      puntos += 30;
+      señales.push('Actividad exclusiva 2am–5am UTC (horario robótico)');
+    }
+  }
+
+  // Regla 7: Username termina en 4+ números → +15
+  const handleBase = (profileData.handle || '').split('.')[0];
+  if (/\d{4,}$/.test(handleBase)) {
+    puntos += 15;
+    señales.push(`Username termina en 4+ números (@${profileData.handle})`);
+  }
+
+  // Clasificación final
+  let veredicto;
+  if      (puntos > 60)  veredicto = 'BOT';
+  else if (puntos >= 35) veredicto = 'SOSPECHOSO';
+  else                   veredicto = 'HUMANO';
+
+  return { puntos, veredicto, señales };
+}
+
+/**
  * Analiza un array de handles en paralelo, en lotes de batchSize.
  * Reduce el tiempo de escaneo de O(n) serie a O(n/batchSize) paralelo.
  *

@@ -9,7 +9,7 @@
  */
 
 import fs from 'fs';
-import { analyzeAccount, analyzeAccountsBatch } from './analyzer.js';
+import { analyzeAccount, analyzeAccountsBatch, capa1 } from './analyzer.js';
 import { generateBotReport } from './claude.js';
 import {
   saveAccount,
@@ -151,7 +151,12 @@ async function analyzeOne(handle, blueskyClient, requestedBy = 'mentions') {
   return { profileData, analysis };
 }
 
-// ─── MODO 1 — Análisis individual ────────────────────────────────────────────
+// ─── MODO 1 — Análisis individual con Capa 1 ─────────────────────────────────
+//
+// Flujo:
+//   capa1 → BOT (>60pts)       → responde directo, sin Claude API
+//   capa1 → HUMANO (<35pts)    → responde directo, sin Claude API
+//   capa1 → SOSPECHOSO (35-60) → análisis profundo con Claude API
 
 async function handleModeAnalyze(mention, blueskyClient) {
   const requesterHandle = mention.author?.handle;
@@ -164,44 +169,96 @@ async function handleModeAnalyze(mention, blueskyClient) {
 
   console.log(`  [M1] Analizando @${targetHandle}...`);
 
-  const result = await analyzeOne(targetHandle, blueskyClient, requesterHandle);
-
-  if (!result) {
+  // Obtener datos del perfil y posts una sola vez
+  const profileData = await blueskyClient.getProfile(targetHandle);
+  if (!profileData) {
     await blueskyClient.replyToPost(
       mention.uri, mention.cid,
       `❌ Bot-ID no encontró el perfil @${targetHandle}. ¿El handle es correcto?`
     );
     return;
   }
+  const postHistory = await blueskyClient.getPostHistory(profileData.did, 100);
 
-  const { profileData, analysis } = result;
+  // ── Capa 1: clasificación rápida sin Claude ───────────────────────────────
+  const c1 = capa1(profileData, postHistory);
+  console.log(`  [C1] @${targetHandle} → ${c1.veredicto} (${c1.puntos}pts)`);
+
+  if (c1.veredicto === 'BOT') {
+    // BOT confirmado → respuesta directa, sin Claude API
+    const listaSeñales = c1.señales.map((s) => `• ${s}`).join('\n');
+    const texto = [
+      `🔴 BOT DETECTADO — @${targetHandle}`,
+      `━━━━━━━━━━━━━━━`,
+      `Puntuación: ${c1.puntos}/130`,
+      listaSeñales,
+      ``,
+      `📊 Bot-ID | Análisis automático`,
+    ].join('\n');
+
+    const imagePath = await generarTarjetaReporte({
+      fuente: `@${targetHandle}`,
+      bots: c1.puntos,
+      total: 130,
+      porcentaje: Math.min(100, Math.round((c1.puntos / 130) * 100)),
+      nivel: 'ALTO',
+      fecha: fechaCorta(),
+      labelBots: 'PUNTOS BOT (C1)',
+    }).catch(() => null);
+
+    saveAccount({ handle: targetHandle, did: profileData.did, score: c1.puntos,
+      nivel: 'ALTO', señales: c1.señales.map((s) => ({ señal: s })), requestedBy: requesterHandle });
+    await replyConImagen(blueskyClient, mention, texto.slice(0, 299), imagePath);
+    console.log(`  ✅ M1-BOT respondido (@${targetHandle} → ${c1.puntos}pts)`);
+    return;
+  }
+
+  if (c1.veredicto === 'HUMANO') {
+    // HUMANO → respuesta directa, sin Claude API
+    const texto = [
+      `🟢 CUENTA HUMANA — @${targetHandle}`,
+      `━━━━━━━━━━━━━━━`,
+      `Sin señales de automatización (${c1.puntos}/130 pts)`,
+      ``,
+      `📊 Bot-ID | Análisis automático`,
+    ].join('\n');
+
+    saveAccount({ handle: targetHandle, did: profileData.did, score: c1.puntos,
+      nivel: 'BAJO', señales: [], requestedBy: requesterHandle });
+    await blueskyClient.replyToPost(mention.uri, mention.cid, texto);
+    console.log(`  ✅ M1-HUMANO respondido (@${targetHandle} → ${c1.puntos}pts)`);
+    return;
+  }
+
+  // ── SOSPECHOSO → análisis profundo con Claude API ────────────────────────
+  console.log(`  [C1] SOSPECHOSO → escalando a Claude API...`);
+
+  const analysis = analyzeAccount(profileData, postHistory);
+  saveAccount({ handle: targetHandle, did: profileData.did, score: analysis.score,
+    nivel: analysis.nivel, señales: analysis.señales, requestedBy: requesterHandle });
+
   const { score, nivel, señales } = analysis;
   const emoji = nivelEmoji(nivel);
   const top3 = señales.slice(0, 3).map((s) => `• ${s.señal}`).join('\n');
 
-  // Intentar versión Claude para scores significativos
   let texto;
-  if (score >= 35) {
-    try {
-      const report = await generateBotReport(profileData, analysis);
-      texto = report.bluesky;
-    } catch {
-      texto = null;
-    }
+  try {
+    const report = await generateBotReport(profileData, analysis);
+    texto = report.bluesky;
+  } catch {
+    texto = null;
   }
 
-  // Fallback: formato propio
   if (!texto) {
     texto = [
-      `🤖 BOT-ID ANÁLISIS`,
+      `🟡 BOT-ID — SOSPECHOSO`,
       `━━━━━━━━━━━━━━━`,
       `Cuenta: @${targetHandle}`,
-      `Probabilidad bot: ${score}%`,
-      `Nivel: ${emoji} ${nivel}`,
+      `Score: ${score}%  |  Nivel: ${emoji} ${nivel}`,
       ``,
       top3 || `• Sin señales críticas`,
       ``,
-      `📊 Bot-ID | Datos abiertos`,
+      `📊 Bot-ID | Análisis profundo`,
     ].join('\n');
   }
 
@@ -217,7 +274,7 @@ async function handleModeAnalyze(mention, blueskyClient) {
   }).catch(() => null);
 
   await replyConImagen(blueskyClient, mention, texto.slice(0, 299), imagePath);
-  console.log(`  ✅ M1 respondido (@${targetHandle} → ${score}/100)`);
+  console.log(`  ✅ M1-SOSPECHOSO respondido (@${targetHandle} → ${score}/100 con Claude)`);
 }
 
 // ─── MODO 2 — Escaneo de hilo (lógica compartida) ────────────────────────────
