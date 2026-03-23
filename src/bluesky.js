@@ -232,9 +232,12 @@ export class BlueskyClient {
 
   // ─── API de Chat / DMs ──────────────────────────────────────────────────────
 
+  // URL base del servicio de chat de Bluesky
+  static CHAT_BASE = 'https://api.bsky.chat/xrpc';
+
   /**
-   * Cabeceras de autenticación para la API de chat (atproto-proxy).
-   * Llama al PDS de Bluesky, que redirige al servicio de chat.
+   * Cabeceras de autenticación para la API de chat.
+   * Llama directamente a api.bsky.chat (no a través del PDS proxy).
    */
   _chatHeaders() {
     const token = this.agent.session?.accessJwt;
@@ -242,7 +245,6 @@ export class BlueskyClient {
     return {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
-      'atproto-proxy': 'did:web:api.bsky.chat#bsky_chat',
     };
   }
 
@@ -254,7 +256,7 @@ export class BlueskyClient {
     this._requireLogin();
     try {
       const res = await fetch(
-        `https://bsky.social/xrpc/chat.bsky.convo.listConvos?limit=${limit}`,
+        `${BlueskyClient.CHAT_BASE}/chat.bsky.convo.listConvos?limit=${limit}`,
         { headers: this._chatHeaders() }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => '')}`);
@@ -276,7 +278,7 @@ export class BlueskyClient {
     this._requireLogin();
     try {
       const res = await fetch(
-        `https://bsky.social/xrpc/chat.bsky.convo.getMessages?convoId=${encodeURIComponent(convoId)}&limit=${limit}`,
+        `${BlueskyClient.CHAT_BASE}/chat.bsky.convo.getMessages?convoId=${encodeURIComponent(convoId)}&limit=${limit}`,
         { headers: this._chatHeaders() }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -298,7 +300,7 @@ export class BlueskyClient {
     this._requireLogin();
     try {
       const truncated = text.length > 1000 ? text.slice(0, 997) + '...' : text;
-      const res = await fetch('https://bsky.social/xrpc/chat.bsky.convo.sendMessage', {
+      const res = await fetch(`${BlueskyClient.CHAT_BASE}/chat.bsky.convo.sendMessage`, {
         method: 'POST',
         headers: this._chatHeaders(),
         body: JSON.stringify({
@@ -322,7 +324,7 @@ export class BlueskyClient {
   async markConvoRead(convoId, messageId) {
     this._requireLogin();
     try {
-      const res = await fetch('https://bsky.social/xrpc/chat.bsky.convo.updateRead', {
+      const res = await fetch(`${BlueskyClient.CHAT_BASE}/chat.bsky.convo.updateRead`, {
         method: 'POST',
         headers: this._chatHeaders(),
         body: JSON.stringify({ convoId, messageId }),
@@ -351,7 +353,7 @@ export class BlueskyClient {
         .join('&');
 
       const res = await fetch(
-        `https://bsky.social/xrpc/chat.bsky.convo.getConvoForMembers?${params}`,
+        `${BlueskyClient.CHAT_BASE}/chat.bsky.convo.getConvoForMembers?${params}`,
         { headers: this._chatHeaders() }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => '')}`);
