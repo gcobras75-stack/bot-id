@@ -30,6 +30,13 @@ const MAX_HASHTAG_ACCOUNTS = 200; // máximo de cuentas a analizar en un hashtag
 // Frases que activan el escaneo contextual del hilo actual (modo 2b)
 const CONTEXTUAL_THREAD_RE = /escanea\s+esta\s+conversaci[oó]n|analiza\s+este\s+hilo|escanea\s+aqu[ií]|analiza\s+aqu[ií]|qui[eé]nes\s+son\s+bots\s+aqu[ií]|hay\s+bots\s+aqu[ií]/i;
 
+// Variaciones del nombre del bot escritas sin @ (para búsqueda activa)
+// Cubre: bot-id.bsky.social · bot-id.bluesky.social · Bot-id · botid · bot id
+const BOT_NAME_VARIANTS_RE = /bot-id\.bsky\.social|bot-id\.bluesky\.social|\bbot[\s-]?id\b/i;
+
+// Intención de solicitud de análisis (evita responder menciones de pasada)
+const SOLICITUD_RE = /analiz[ae]|escanea|scan|hay\s+bots|qu[ié]nes\s+son\s+bots|revisa|detecta/i;
+
 // Rate limiting por usuario (en memoria, reset natural cada hora)
 // Map<handle, number[]> — timestamps de cada solicitud
 const userRequests = new Map();
@@ -569,12 +576,42 @@ async function processMention(mention, blueskyClient) {
   markProcessed({ mentionUri, requesterHandle, targetHandle: null });
 }
 
+// ─── Búsqueda activa de variantes del nombre ─────────────────────────────────
+
+/**
+ * Busca posts recientes que contengan variaciones del nombre del bot sin @.
+ * @param {import('./bluesky.js').BlueskyClient} blueskyClient
+ * @returns {Promise<object[]>} array de posts (mismo formato que notificaciones)
+ */
+async function searchVariantMentions(blueskyClient) {
+  const queries = ['bot-id', 'botid'];
+  const found = [];
+
+  for (const q of queries) {
+    try {
+      const res = await blueskyClient.agent.app.bsky.feed.searchPosts({ q, limit: 25 });
+      found.push(...(res.data.posts || []));
+    } catch (err) {
+      console.warn(`⚠️  Error buscando variante "${q}":`, err.message);
+    }
+  }
+
+  // Deduplicar por uri
+  const seen = new Set();
+  return found.filter((p) => {
+    if (seen.has(p.uri)) return false;
+    seen.add(p.uri);
+    return true;
+  });
+}
+
 // ─── Listener de polling ──────────────────────────────────────────────────────
 
 export function startMentionsListener(blueskyClient) {
   let cursor;
   let running = false;
 
+  // ── Polling principal: menciones directas con @ (cada 60s) ──────────────
   const tick = async () => {
     if (running) return;
     running = true;
@@ -602,10 +639,37 @@ export function startMentionsListener(blueskyClient) {
     }
   };
 
+  // ── Polling secundario: variantes sin @ en hilos ajenos (cada 5 min) ────
+  const tickVariants = async () => {
+    const botHandle = (process.env.BLUESKY_USERNAME || '').replace('@', '').toLowerCase();
+    try {
+      const posts = await searchVariantMentions(blueskyClient);
+      for (const post of posts) {
+        const text = post.record?.text || '';
+        const authorHandle = post.author?.handle || '';
+
+        // Ignorar posts del propio bot
+        if (authorHandle.toLowerCase() === botHandle) continue;
+        // Solo procesar si hay variante del nombre Y intención de solicitud
+        if (!BOT_NAME_VARIANTS_RE.test(text) || !SOLICITUD_RE.test(text)) continue;
+        // Deduplicación
+        if (isProcessed(post.uri)) continue;
+
+        console.log(`🔍 Variante detectada de @${authorHandle}: "${text.slice(0, 60)}..."`);
+        await processMention(post, blueskyClient);
+        await sleep(2000);
+      }
+    } catch (err) {
+      console.error('Error en búsqueda de variantes:', err.message);
+    }
+  };
+
   tick();
-  const intervalo = setInterval(tick, 60 * 1000);
+  setInterval(tick, 60 * 1000);
+  setInterval(tickVariants, 5 * 60 * 1000);
+
   console.log('📡 Listener de menciones activo (polling cada 60s)');
-  return intervalo;
+  console.log('🔍 Búsqueda de variantes activa (cada 5 min)');
 }
 
 function sleep(ms) {
