@@ -65,6 +65,20 @@ export function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_mentions_uri ON processed_mentions(mention_uri);
 
+    -- Usuarios y planes
+    CREATE TABLE IF NOT EXISTS users (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      handle      TEXT NOT NULL UNIQUE,
+      plan        TEXT NOT NULL DEFAULT 'FREE',
+      balance_mxn REAL NOT NULL DEFAULT 0,
+      daily_count INTEGER NOT NULL DEFAULT 0,
+      last_reset  TEXT NOT NULL DEFAULT '',
+      created_at  TEXT NOT NULL,
+      notes       TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_users_handle ON users(handle);
+
     -- Costos de llamadas a la API de Anthropic
     CREATE TABLE IF NOT EXISTS api_costs (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,

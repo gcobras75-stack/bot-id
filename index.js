@@ -14,7 +14,7 @@ import { scheduleWeeklyReport } from './src/reporter.js';
 import { scheduleTrendingPublisher } from './src/publisher.js';
 import { initCostMonitor } from './src/costMonitor.js';
 import { startPatrol } from './src/patrol.js';
-import { startDMListener } from './src/dm.js';
+import { startDMListener, sendAdminStartupReport } from './src/dm.js';
 import { scheduleDailyPosts } from './src/dailyPosts.js';
 
 // ─── Validación de variables de entorno ─────────────────────────────────────
@@ -125,7 +125,12 @@ Para detección discreta: envía DM a @${process.env.BLUESKY_USERNAME}
 Presiona Ctrl+C para detener.
 `);
 
-  // 12. Ejecutar un primer escaneo al iniciar (en background)
+  // 12. Enviar reporte de prueba al admin por DM (en background)
+  sendAdminStartupReport(bluesky).catch((err) => {
+    console.error('Error enviando reporte admin:', err.message);
+  });
+
+  // 13. Ejecutar un primer escaneo al iniciar (en background)
   console.log('🔄 Ejecutando escaneo inicial en segundo plano...');
   runScan(bluesky).catch((err) => {
     console.error('Error en escaneo inicial:', err.message);

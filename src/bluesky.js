@@ -333,6 +333,36 @@ export class BlueskyClient {
     }
   }
 
+  /**
+   * Obtiene o crea una conversación DM con un handle específico.
+   * Útil para enviar mensajes proactivos (p.ej. reportes al admin).
+   * @param {string} handle  handle de Bluesky (sin @)
+   * @returns {Promise<object|null>} objeto convo o null si falla
+   */
+  async getOrCreateConvoWithHandle(handle) {
+    this._requireLogin();
+    try {
+      const profile = await this.getProfile(handle);
+      if (!profile?.did) throw new Error(`Perfil no encontrado: ${handle}`);
+
+      const myDid  = this.agent.session?.did;
+      const params = [myDid, profile.did]
+        .map((d) => `members=${encodeURIComponent(d)}`)
+        .join('&');
+
+      const res = await fetch(
+        `https://bsky.social/xrpc/chat.bsky.convo.getConvoForMembers?${params}`,
+        { headers: this._chatHeaders() }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+      const data = await res.json();
+      return data.convo || null;
+    } catch (err) {
+      console.error(`Error obteniendo convo con @${handle}:`, err.message);
+      return null;
+    }
+  }
+
   // ─── Helpers internos ────────────────────────────────────────────────────────
 
   _requireLogin() {

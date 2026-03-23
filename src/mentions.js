@@ -20,6 +20,8 @@ import {
 } from './database.js';
 import { generarTarjetaReporte } from './imageGenerator.js';
 import { optedOut } from './state.js';
+import { buildUserContext, incrementDailyCount, billAnalysis } from './plans.js';
+import { detectCoordinatedNetwork, formatCoordinationResult } from './coordination.js';
 
 // ─── Configuración ───────────────────────────────────────────────────────────
 
@@ -167,7 +169,7 @@ async function analyzeOne(handle, blueskyClient, requestedBy = 'mentions') {
 //   capa1 → HUMANO (<35pts)    → responde directo, sin Claude API
 //   capa1 → SOSPECHOSO (35-60) → análisis profundo con Claude API
 
-async function handleModeAnalyze(mention, blueskyClient) {
+async function handleModeAnalyze(mention, blueskyClient, ctx = null) {
   const requesterHandle = mention.author?.handle;
   const text = mention.record?.text || '';
   const targetHandle = extractTargetHandle(text, process.env.BLUESKY_USERNAME);
@@ -355,8 +357,9 @@ async function handleModeAnalyze(mention, blueskyClient) {
  * @param {object} mention        - objeto de la notificación (para reply)
  * @param {object} blueskyClient
  */
-async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) {
+async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient, ctx = null) {
   const requesterHandle = mention.author?.handle;
+  const maxCuentas = ctx?.maxCuentas ?? MAX_THREAD_ACCOUNTS;
 
   const { participants } = await blueskyClient.getThread(atUri);
   if (participants.size === 0) {
@@ -367,12 +370,16 @@ async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) 
     return;
   }
 
-  // Analizar hasta MAX_THREAD_ACCOUNTS cuentas únicas — en paralelo
-  const handlesList = [...participants.values()].slice(0, MAX_THREAD_ACCOUNTS).map(p => p.handle);
+  // Limitar por plan del usuario
+  const handlesList = [...participants.values()]
+    .slice(0, Math.min(maxCuentas, MAX_THREAD_ACCOUNTS))
+    .map((p) => p.handle);
+
   const botsEncontrados = [];
+  const coordinationData = []; // para detección de red coordinada
   let analizados = 0;
 
-  const batchResults = await analyzeAccountsBatch(handlesList, blueskyClient, { postLimit: 100 });
+  const batchResults = await analyzeAccountsBatch(handlesList, blueskyClient, { postLimit: 50 });
   for (const { handle, profileData, analysis } of batchResults) {
     analizados++;
     saveAccount({
@@ -382,10 +389,25 @@ async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) 
     if (analysis.score >= DUD_THRESHOLD) {
       botsEncontrados.push({ handle, score: analysis.score });
     }
+    coordinationData.push({ handle, profile: profileData, posts: [] });
   }
+
+  // Cobrar análisis si es PREPAGO
+  if (ctx?.plan === 'PREPAGO') billAnalysis(requesterHandle, analizados);
 
   botsEncontrados.sort((a, b) => b.score - a.score);
   const pct = analizados > 0 ? Math.round((botsEncontrados.length / analizados) * 100) : 0;
+
+  // Detección de red coordinada (solo PREPAGO y EMPRESARIAL)
+  let coordText = '';
+  if (ctx?.canUseCoordination && botsEncontrados.length >= 3) {
+    const coordResult = detectCoordinatedNetwork(coordinationData);
+    if (coordResult.detectada) {
+      coordText = '\n\n' + formatCoordinationResult(coordResult);
+    }
+  } else if (!ctx?.canUseCoordination && botsEncontrados.length >= 3) {
+    coordText = '\n\n🕸️ Posible red coordinada — disponible en plan Prepago';
+  }
 
   let respuesta;
   if (botsEncontrados.length === 0) {
@@ -397,7 +419,7 @@ async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) 
     ].join('\n');
   } else {
     const listaTop = botsEncontrados
-      .slice(0, 2)  // máx 2 para respetar el límite de 299 chars
+      .slice(0, 2)
       .map((b) => `${scoreEmoji(b.score)} @${b.handle} — ${b.score}% ${b.score >= BOT_THRESHOLD ? 'probabilidad bot' : 'dudoso'}`)
       .join('\n');
 
@@ -413,7 +435,7 @@ async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) 
       `⚠️ Esta conversación tiene manipulación artificial`,
       `━━━━━━━━━━━━━━━━━━━`,
       `Bot-ID | Transparencia digital 🔍`,
-    ].join('\n');
+    ].join('\n') + coordText;
   }
 
   const imagePath = await generarTarjetaReporte({
@@ -426,12 +448,12 @@ async function scanAndReportThread(atUri, tituloHeader, mention, blueskyClient) 
   }).catch(() => null);
 
   await replyConImagen(blueskyClient, mention, respuesta.slice(0, 299), imagePath);
-  console.log(`  ✅ Hilo escaneado (${botsEncontrados.length}/${analizados} bots)`);
+  console.log(`  ✅ Hilo escaneado (${botsEncontrados.length}/${analizados} bots | plan: ${ctx?.plan ?? 'N/A'})`);
 }
 
 // ─── MODO 2a — Escaneo de hilo por URL ───────────────────────────────────────
 
-async function handleModeThreadUrl(mention, blueskyClient) {
+async function handleModeThreadUrl(mention, blueskyClient, ctx = null) {
   const text = mention.record?.text || '';
   const url = extractBskyUrl(text);
 
@@ -450,14 +472,12 @@ async function handleModeThreadUrl(mention, blueskyClient) {
     return;
   }
 
-  await scanAndReportThread(atUri, 'ESCANEO DE CONVERSACIÓN', mention, blueskyClient);
+  await scanAndReportThread(atUri, 'ESCANEO DE CONVERSACIÓN', mention, blueskyClient, ctx);
 }
 
 // ─── MODO 2b — Escaneo contextual del hilo actual ────────────────────────────
 
-async function handleModeThreadContext(mention, blueskyClient) {
-  // El AT URI raíz del hilo está en record.reply.root.uri
-  // Si no hay reply, la mención está suelta (no dentro de un hilo)
+async function handleModeThreadContext(mention, blueskyClient, ctx = null) {
   const rootUri = mention.record?.reply?.root?.uri;
 
   if (!rootUri) {
@@ -469,12 +489,12 @@ async function handleModeThreadContext(mention, blueskyClient) {
   }
 
   console.log(`  [M2b] Escaneo contextual del hilo: ${rootUri}`);
-  await scanAndReportThread(rootUri, 'ESCANEO DEL HILO', mention, blueskyClient);
+  await scanAndReportThread(rootUri, 'ESCANEO DEL HILO', mention, blueskyClient, ctx);
 }
 
 // ─── MODO 3 — Escaneo de hashtag ─────────────────────────────────────────────
 
-async function handleModeHashtag(mention, blueskyClient) {
+async function handleModeHashtag(mention, blueskyClient, ctx = null) {
   const requesterHandle = mention.author?.handle;
   const text = mention.record?.text || '';
   const hashtag = extractHashtag(text);
@@ -483,9 +503,9 @@ async function handleModeHashtag(mention, blueskyClient) {
     return replyHelp(mention, blueskyClient);
   }
 
-  console.log(`  [M3] Escaneando #${hashtag}...`);
+  const maxCuentas = ctx?.maxCuentas ?? MAX_HASHTAG_ACCOUNTS;
+  console.log(`  [M3] Escaneando #${hashtag} (máx ${maxCuentas} cuentas, plan: ${ctx?.plan ?? '?'})...`);
 
-  // Buscar posts con el hashtag
   const posts = await blueskyClient.searchHashtag(hashtag, 100);
   if (posts.length === 0) {
     await blueskyClient.replyToPost(
@@ -495,8 +515,7 @@ async function handleModeHashtag(mention, blueskyClient) {
     return;
   }
 
-  // Construir mapa de autores con conteo de posts
-  const autoresMap = new Map(); // handle → { handle, did, postCount }
+  const autoresMap = new Map();
   for (const post of posts) {
     const { handle, did } = post.author || {};
     if (!handle) continue;
@@ -505,12 +524,12 @@ async function handleModeHashtag(mention, blueskyClient) {
     autoresMap.set(handle, entry);
   }
 
-  // Analizar hasta MAX_HASHTAG_ACCOUNTS cuentas únicas — en paralelo
-  const autores = [...autoresMap.values()].slice(0, MAX_HASHTAG_ACCOUNTS);
+  const autores = [...autoresMap.values()].slice(0, Math.min(maxCuentas, MAX_HASHTAG_ACCOUNTS));
   const botsEncontrados = [];
+  const coordinationData = [];
   let analizados = 0;
 
-  const batchResults = await analyzeAccountsBatch(autores.map(a => a.handle), blueskyClient, { postLimit: 100 });
+  const batchResults = await analyzeAccountsBatch(autores.map((a) => a.handle), blueskyClient, { postLimit: 50 });
   for (const { handle, profileData, analysis } of batchResults) {
     analizados++;
     saveAccount({
@@ -521,7 +540,11 @@ async function handleModeHashtag(mention, blueskyClient) {
     if (analysis.score >= DUD_THRESHOLD) {
       botsEncontrados.push({ handle, score: analysis.score, postCount });
     }
+    coordinationData.push({ handle, profile: profileData, posts: [] });
   }
+
+  // Cobrar análisis si es PREPAGO
+  if (ctx?.plan === 'PREPAGO') billAnalysis(requesterHandle, analizados);
 
   // Guardar en weekly_scans
   const hoy = new Date().toISOString().split('T')[0];
@@ -550,6 +573,17 @@ async function handleModeHashtag(mention, blueskyClient) {
     .map((b) => `* @${b.handle} — ${b.postCount} posts, ${b.score}% bot`)
     .join('\n');
 
+  // Detección de red coordinada (solo PREPAGO y EMPRESARIAL)
+  let coordText = '';
+  if (ctx?.canUseCoordination && botsEncontrados.length >= 3) {
+    const coordResult = detectCoordinatedNetwork(coordinationData);
+    if (coordResult.detectada) {
+      coordText = '\n\n' + formatCoordinationResult(coordResult);
+    }
+  } else if (!ctx?.canUseCoordination && botsEncontrados.length >= 3) {
+    coordText = '\n🕸️ Posible red coordinada — disponible en plan Prepago';
+  }
+
   const respuesta = [
     `📊 BOT-ID — REPORTE DE HASHTAG`,
     `#${hashtag} — últimas 2 horas`,
@@ -560,9 +594,10 @@ async function handleModeHashtag(mention, blueskyClient) {
     ``,
     `Nivel de manipulación: ${nivelManip}`,
     botsEncontrados.length > 0 ? `\nTop bots más activos:\n${topBots}` : '',
+    coordText,
     ``,
     `Bot-ID | Transparencia digital`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const imagePath = await generarTarjetaReporte({
     fuente: `#${hashtag}`,
@@ -574,7 +609,7 @@ async function handleModeHashtag(mention, blueskyClient) {
   }).catch(() => null);
 
   await replyConImagen(blueskyClient, mention, respuesta.slice(0, 299), imagePath);
-  console.log(`  ✅ M3 respondido (#${hashtag} → ${botsEncontrados.length}/${analizados} bots)`);
+  console.log(`  ✅ M3 respondido (#${hashtag} → ${botsEncontrados.length}/${analizados} bots | plan: ${ctx?.plan ?? 'N/A'})`);
 }
 
 // ─── Helpers de imagen ───────────────────────────────────────────────────────
@@ -672,6 +707,14 @@ async function processMention(mention, blueskyClient) {
     }
   }
 
+  // ── Plan check ────────────────────────────────────────────────────────────
+  const ctx = buildUserContext(requesterHandle);
+  if (!ctx.canProceed) {
+    await blueskyClient.replyToPost(mentionUri, mention.cid, ctx.blockMessage.slice(0, 299));
+    markProcessed({ mentionUri, requesterHandle, targetHandle: null });
+    return;
+  }
+
   // Rate limiting por usuario
   if (countUserRequestsLastHour(requesterHandle) >= MAX_PER_USER_PER_HOUR) {
     console.log(`  ⏸️  Rate limit para @${requesterHandle}`);
@@ -684,23 +727,23 @@ async function processMention(mention, blueskyClient) {
   }
 
   const modo = detectMode(text, mention);
-  console.log(`📬 Mención de @${requesterHandle} — modo: ${modo}`);
+  console.log(`📬 Mención de @${requesterHandle} — modo: ${modo} | plan: ${ctx.plan}`);
 
   recordUserRequest(requesterHandle);
 
   try {
     switch (modo) {
       case 'analyze':
-        await handleModeAnalyze(mention, blueskyClient);
+        await handleModeAnalyze(mention, blueskyClient, ctx);
         break;
       case 'thread-context':
-        await handleModeThreadContext(mention, blueskyClient);
+        await handleModeThreadContext(mention, blueskyClient, ctx);
         break;
       case 'thread-url':
-        await handleModeThreadUrl(mention, blueskyClient);
+        await handleModeThreadUrl(mention, blueskyClient, ctx);
         break;
       case 'hashtag':
-        await handleModeHashtag(mention, blueskyClient);
+        await handleModeHashtag(mention, blueskyClient, ctx);
         break;
       default:
         await handleModeUnknown(mention, blueskyClient);
@@ -708,6 +751,9 @@ async function processMention(mention, blueskyClient) {
   } catch (err) {
     console.error(`  ❌ Error procesando mención (${modo}):`, err.message);
   }
+
+  // Incrementar uso diario y cobrar si es PREPAGO
+  incrementDailyCount(requesterHandle);
 
   markProcessed({ mentionUri, requesterHandle, targetHandle: null });
 }
