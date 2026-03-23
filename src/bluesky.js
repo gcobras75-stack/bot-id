@@ -17,7 +17,7 @@ export class BlueskyClient {
    * Errores que no son rate limit (credenciales incorrectas, red) fallan de inmediato.
    */
   async login() {
-    const DELAYS = [5 * 60_000, 10 * 60_000, 20 * 60_000]; // 5 min, 10 min, 20 min
+    const DELAYS = [15 * 60_000, 30 * 60_000]; // 15 min, 30 min
     const MAX_ATTEMPTS = 3;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
