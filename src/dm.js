@@ -340,14 +340,14 @@ async function analyzeHashtagForDMWithCoordination(hashtag, bluesky, ctx) {
 
 // ─── Comandos de administrador ────────────────────────────────────────────────
 
-const ADMIN_HANDLES = (process.env.ADMIN_BLUESKY_HANDLE || 'duendess,katya19')
+const ADMIN_HANDLES = (process.env.ADMIN_BLUESKY_HANDLE || 'duendess.bsky.social,katya19.bsky.social')
   .split(',')
   .map((h) => h.trim().replace('@', '').toLowerCase())
   .filter(Boolean);
 
 // Asegurarse de incluir a katya19 (y duendess) como administradores defaults
-if (!ADMIN_HANDLES.includes('katya19')) ADMIN_HANDLES.push('katya19');
-if (!ADMIN_HANDLES.includes('duendess')) ADMIN_HANDLES.push('duendess');
+if (!ADMIN_HANDLES.includes('katya19.bsky.social')) ADMIN_HANDLES.push('katya19.bsky.social');
+if (!ADMIN_HANDLES.includes('duendess.bsky.social')) ADMIN_HANDLES.push('duendess.bsky.social');
 
 /**
  * Compara el handle del remitente contra administradores permitidos.
