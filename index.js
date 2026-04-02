@@ -6,6 +6,7 @@
  */
 
 import 'dotenv/config';
+import { createServer } from 'http';
 import { BlueskyClient } from './src/bluesky.js';
 import { initDatabase } from './src/database.js';
 import { startMentionsListener } from './src/mentions.js';
@@ -71,9 +72,26 @@ process.on('SIGTERM', () => {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+function startHealthServer() {
+  const port = process.env.PORT || 3000;
+  const server = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', uptime: process.uptime() }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  server.listen(port, () => {
+    console.log(`🩺 Health server escuchando en puerto ${port}`);
+  });
+}
+
 async function main() {
   printBanner();
   validateEnv();
+  startHealthServer();
 
   // 1. Inicializar base de datos
   console.log('🗄️  Iniciando base de datos...');
